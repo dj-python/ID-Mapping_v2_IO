@@ -1,26 +1,90 @@
 # 이 코드는 Pusher 동작 IO보드용 클라이언트 TCP 통신 모듈임.
-
+import _thread
+from machine import Pin, SPI
+import network
 import socket
 import time
 
+tcpSocket = None
+is_initialized = None
+_ping_thread_running = None
 
-def init(self, server_ip: str, server_port: int):
-    self.server_ip = server_ip
-    self.server_port = server_port
-    self.sock = None
-    self.connect_to_server()
+def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_port: int):
+    global tcpSocket, is_initialized, _ping_thread_running
 
-def connect_to_server(self):
-    self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # 기본 소켓이 열려 있으면 닫고 초기화
+        if tcpSocket:
+            try:tcpSocket.close()
+            except: pass
+            tcpSocket = None
 
-    while True:
-        try:
-            self.sock.connect((self.server_ip, self.server_port))
-            print(f"[*] 서버에 연결됨: {self.server_ip}:{self.server_port}")
-            break                                           # 서버에 성공적으로 연결되면 루프 종료
-        except Exception as e:
-            print(f"[클라이언트] 서버 연결 실패: {str(e)}, 1초 후 재시도..")
-            time.sleep(1)
+            spi = SPI(0, 1_000_000, polarity=0, phase=0, mosi=Pin(19), miso=Pin(16), sck=Pin(18))
+            eth = network.WIZNET5K(spi, Pin(17), Pin(20))
+            eth.active(True)
+
+            eth.ifconfig((ipAddress, '255.255.255.0', '8.8.8.8', gateway))
+            print("[*] Network Config:", eth.ifconfig())
+            print(f"[*] Attempting connection to... {server_ip}:{server_port}")
+
+            # 서버 접속 시도 (재시도 로직 포함)
+            try:
+                tcpSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                tcpSocket.bind(ipAddress, portNumber)
+                tcpSocket.connect((server_ip, server_port))
+                is_initialized = True
+                tcpSocket.setblocking(True)
+                print(f"[*] Connected to TCP Server: {server_ip} : {server_port}")
+
+                # ping 송신 스레드 시작
+                if not _ping_thread_running:
+                    _thread.start_new_thread(_ping_sender, ())
+                    _ping_thread_running = True
+
+            except Exception as e:
+                print(f"[-] Unexpected Error: {e}")
+                is_initialized = False
+                if tcpSocket:
+                    try: tcpSocket.close()
+                    except: pass
+                    tcpSocket = None
+
+    except Exception as e:
+        print(f"[-] Initialization Error: {str(e)}")
+        is_initialized = False
+        try: tcpSocket.close()
+        except: pass
+        tcpSocket = None
+
+def _ping_sender():
+    global tcpSocket, is_initialized, _ping_thread_running
+
+    try:
+        while is_initialized and tcpSocket:
+            try:
+                tcpSocket.sendall(b"ping\n")
+                print("[*] Ping sent")
+            except Exception as e:
+                print(f"[Error] ping send failed: {e}")
+                is_initialized = False
+                break
+            time.sleep(3)
+    except Exception as e:
+        print(f"[Error] ping sender thread error: {e}")
+        is_initialized = False
+    finally:
+        _ping_thread_running = False
+
+def read_from_socket():
+    global tcpSocket, is_initialized
+    if tcpSocket is None:
+        return b""
+    try:
+        return tcpSocket.recv(1024)
+    except Exception as e:
+        print(f"[Error] socket recv failed: {e}")
+        is_initialized = False
+        return b""
 
 def receive_data(self):
     try:
@@ -32,14 +96,20 @@ def receive_data(self):
         print(f"[클라이언트] Error: {str(e)}")
         raise
 
-def send_data(self, msg: str):
+def sendMessage(self, msg: str):
+    global tcpSocket, is_initialized
+    # 메시지 전송
     try:
-        self.sock.sendall(msg.encode())
-        print(f"[클라이언트] 응답 메시지 전송: {msg}")
+        tcpSocket.sendall(msg.encode('utf-8'))
+        print(f"[클라이언트] Message sent: {msg}")
     except Exception as e:
-        print(f"Error: {str(e)}")
+        print(f"[클라이언트] Send Error: {str(e)}")
+        is_initialized = False
 
 def close_connection(self):
-    self.sock.close()
-    print("[*] 서버 연결 종료")
+    global tcpSocket
+    if tcpSocket:
+        tcpSocket.close()
+        tcpSocket = None
+        print("[*] 서버 연결 종료")
 

@@ -23,36 +23,25 @@ class MainPusher:
     cTemp = 0
 
     def __init__(self):
-        self.sysBuzzer = Pin(14, Pin.OUT)
-        self.gpioIn_sel = Pin(15, Pin.OUT)
         self.sysLed_pico = Pin(25, Pin.OUT)
-        self.sysLed_board = Pin(28, Pin.OUT)
 
         #region Init GPIO_OUT
-        self.gpioOut_pusherBack = Pin(0, Pin.OUT)
-        self.gpioOut_pusherFront = Pin(1, Pin.OUT)
-        self.gpioOut_pusherUp = Pin(2, Pin.OUT)
-        self.gpioOut_pusherDown = Pin(3, Pin.OUT)
+        self.gpioOut_pusherDown = Pin(10, Pin.OUT)
+        self.gpioOut_pusherUp = Pin(11, Pin.OUT)
+        self.gpioOut_pusherBack = Pin(14, Pin.OUT)
+        self.gpioOut_pusherFront = Pin(15, Pin.OUT)
         #end region
 
         #region Init GPIO_IN
-        self.gpioIn0 = Pin(10, Pin.IN)
-        self.gpioIn1 = Pin(11, Pin.IN)
-        self.gpioIn2 = Pin(12, Pin.IN)
-        self.gpioIn3 = Pin(13, Pin.IN)
-
-        self.gpioIn_ipSel1 = Pin(22, Pin.IN)
-        self.gpioIn_ipSel2 = Pin(26, Pin.IN)
-        self.gpioIn_ipSel3 = Pin(27, Pin.IN)
-
-        self.gpioIn_pusherBack = None
-        self.gpioIn_PusherFront = None
-        self.gpioIn_PusherUp = None
-        self.gpioIn_PusherDown = None
-        self.gpioIn_Light = None
-        self.gpioIn_PushButtonLeft = None
-        self.gpioIn_PushButtonRight = None
+        self.gpioIn_PusherDown = Pin(0, Pin.IN)
+        self.gpioIn_PusherUp = Pin(1, Pin.IN)
+        self.gpioIn_PusherBack = Pin(2, Pin.IN)
+        self.gpioIn_PusherFront = Pin(3, Pin.IN)
+        self.gpioIn_STOP = Pin(4, Pin.IN)
+        self.gpioIn_Start_R = Pin(5, Pin.IN)
+        self.gpioIn_Start_L = Pin(6, Pin.IN)
         #end region
+        self.init_gpioOut()
 
         TCPClient.init(server_ip= '', server_port='')
 
@@ -63,8 +52,6 @@ class MainPusher:
 
         self.isExecProcess_unit0p = False
         self.idxExecProcess_unit0p = 0
-        self.isExecProcess_loadUnload = False
-        self.idxExecProcess_loadUnload = 0
 
         self.pusherStatus = PusherStatus.UNKNOWN
         self.pusherError = PusherError.NONE
@@ -78,58 +65,43 @@ class MainPusher:
         self.TCP_Server = ('166.79.25.110', 8000)
 
     def init_gpioOut(self):
-        self.set_gpioOut(self.sysBuzzer, False)
-        self.set_gpioOut(self.gpioOut_pusherUp, False)
-        self.set_gpioOut(self.gpioOut_pusherDown, False)
-        self.set_gpioOut(self.gpioOut_pusherBack, False)
-        self.set_gpioOut(self.gpioOut_pusherFront, False)
+        self.set_gpioOut(self.gpioIn_PusherDown, False)
+        self.set_gpioOut(self.gpioIn_PusherUp, False)
+        self.set_gpioOut(self.gpioIn_PusherBack, False)
+        self.set_gpioOut(self.gpioIn_PusherFront, False)
+        self.set_gpioOut(self.gpioIn_STOP, False)
+        self.set_gpioOut(self.gpioIn_Start_R, False)
+        self.set_gpioOut(self.gpioIn_Start_L, False)
 
     @staticmethod
     def set_gpioOut(target, value):
         target.value(not value)
 
-    def get_gpioIn(self):
-
-        self.gpioIn_sel.on()
-        time.sleep_us(1)
-        self.gpioIn_pusherBack = not self.gpioIn0.value()
-        self.gpioIn_PusherFront = not self.gpioIn1.value()
-        self.gpioIn_PusherUp = not self.gpioIn2.value()
-        self.gpioIn_PusherDown = not self.gpioIn3.value()
-
-        self.gpioIn_sel.off()
-        time.sleep_us(1)
-        self.gpioIn_Light = not self.gpioIn0.value()
-        self.gpioIn_PushButtonLeft = not self.gpioIn1.value()
-        self.gpioIn_PushButtonRight = not self.gpioIn2.value()
-
     def func_10msec(self):
-        self.get_gpioIn()
-
         message, address = TCPClient.receive_data()
         if message is not None:
             self.rxMessage = message.decode('utf-8')
             print(address, self.rxMessage, self.pusherStatus)
 
             # Init Pusher
-            if self.rxMessage[1:3] == '20':
+            if self.rxMessage == 'initial_pusher':
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_initPusherPos = 0
                 self.pusherStatus = PusherStatus.DOING
                 self.isExecProcess_initPusherPos = True
             # Reset Pusher
-            elif self.rxMessage[1:3] == '14':
+            elif self.rxMessage == 'Reset':
                 if self.isInitedPusher:
                     self.pusherStatus = PusherStatus.READY
                     self.pusherError = PusherError.NONE
-                    self.replyMessage('S' + self.rxMessage[1:5] + '000')
+                    self.replyMessage('Reset finished')
                 else:
-                    self.replyMessage('S' + self.rxMessage[1:5] + '001')
+                    self.replyMessage('Reset failed')
 
             else:
                 if self.pusherStatus is PusherStatus.READY:
                     # load/unload
-                    if self.rxMessage[1:3] == '21':
+                    if self.rxMessage == 'Unload':
                         self.idxExecProcess_loadUnload = 0
                         self.isExecProcess_loadUnload = True
                     # unit operation
