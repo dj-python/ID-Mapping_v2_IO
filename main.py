@@ -44,7 +44,6 @@ class MainPusher:
         self.gpioIn_Start_R = Pin(5, Pin.IN)
         self.gpioIn_Start_L = Pin(6, Pin.IN)
         #end region
-        self.init_gpioOut()
 
         ipaddress = '192.168.1.105'
         portNumber = 8005
@@ -74,20 +73,6 @@ class MainPusher:
 
         self.isInitedPusher = None
 
-        self.TCP_Server = ('166.79.25.110', 8000)
-
-    def init_gpioOut(self):
-        self.set_gpioOut(self.gpioIn_PusherDown, False)
-        self.set_gpioOut(self.gpioIn_PusherUp, False)
-        self.set_gpioOut(self.gpioIn_PusherBack, False)
-        self.set_gpioOut(self.gpioIn_PusherFront, False)
-        self.set_gpioOut(self.gpioIn_STOP, False)
-        self.set_gpioOut(self.gpioIn_Start_R, False)
-        self.set_gpioOut(self.gpioIn_Start_L, False)
-
-    @staticmethod
-    def set_gpioOut(target, value):
-        target.value(not value)
 
     def func_10msec(self):
         message, address = TCPClient.receive_data()
@@ -144,8 +129,8 @@ class MainPusher:
 
     def execProcess_setPusherPos(self):
         if self.idxExecProcess_initPusherPos == 0:                          # Pusher up
-            self.set_gpioOut(self.gpioOut_pusherUp, True)
-            self.set_gpioOut(self.gpioOut_pusherDown, False)
+            self.gpioOut_pusherUp(True)
+            self.gpioOut_pusherDown(False)
             self.idxExecProcess_initPusherPos += 1
         elif self.idxExecProcess_initPusherPos == 1:
             self.pusherError = PusherError.PUSHER_UP                        # Pusher up 확인
@@ -155,8 +140,8 @@ class MainPusher:
         elif self.idxExecProcess_initPusherPos == 2:                        # 125msec 대기
             self.cntExecProcess += 1
             if self.cntExecProcess >= 5:                                    # Pusher Back
-                self.set_gpioOut(self.gpioOut_pusherBack, True)
-                self.set_gpioOut(self.gpioOut_pusherFront, False)
+                self.gpioOut_pusherBack(True)
+                self.gpioOut_pusherFront(False)
                 self.idxExecProcess_initPusherPos += 1
         elif self.idxExecProcess_initPusherPos == 3:                        # Pusher Back 확인
             self.pusherError = PusherError.PUSHER_BACK
@@ -178,21 +163,21 @@ class MainPusher:
 
     def execProcess_load(self):
         if self.idxExecProcess_load == 0:                     # Pusher 초기상태 확인
-            if self.gpioIn_PusherUp and self.gpioIn_PusherBack :
+            if not self.gpioIn_PusherUp and not self.gpioIn_PusherBack:
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_load += 1
             else:
-                if not self.gpioIn_PusherUp:
+                if self.gpioIn_PusherUp:
                     self.pusherError = PusherError.PUSHER_UP
-                elif not self.gpioIn_PusherBack:
+                elif self.gpioIn_PusherBack:
                     self.pusherError = PusherError.PUSHER_BACK
         if self.idxExecProcess_load == 1:                     # Pusher 전진 동작
-            self.set_gpioOut(self.gpioOut_pusherFront, True)
-            self.set_gpioOut(self.gpioOut_pusherBack, False)
+            self.gpioOut_pusherFront(True)
+            self.gpioOut_pusherBack(False)
             self.idxExecProcess_load += 1
         elif self.idxExecProcess_load == 2:                   # Pusher 전진 확인
             self.pusherError = PusherError.PUSHER_FRONT
-            if self.gpioIn_PusherFront:
+            if not self.gpioIn_PusherFront:
                 self.cntTimeOutExecProcess = 0
                 self.cntExecProcess = 0
                 self.idxExecProcess_load += 1
@@ -202,13 +187,13 @@ class MainPusher:
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_load += 1
         elif self.idxExecProcess_load ==4:                   # Pusher 하강 동작
-            self.set_gpioOut(self.gpioOut_pusherUp, False)
-            self.set_gpioOut(self.gpioOut_pusherDown, True)
+            self.gpioOut_pusherUp(False)
+            self.gpioOut_pusherDown(True)
             self.cntExecProcess = 0
             self.idxExecProcess_load += 1
         elif self.idxExecProcess_load == 5:                   # Pusher 하강 확인
             self.pusherError = PusherError.PUSHER_DOWN
-            if self.gpioIn_PusherDown:
+            if not self.gpioIn_PusherDown:
                 self.isExecProcess_load = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
@@ -221,17 +206,17 @@ class MainPusher:
             self.isExecProcess_load = False
             self.pusherStatus = PusherStatus.ERROR
             self.pusherError = PusherError.LOAD_UNLOAD
-            self.replyMessage('S' + self.rxMessage[1:5] + errorCode)
+            self.replyMessage('Error' + errorCode)
 
     def execProcess_Unload(self):
         # unload (Pusher Back)
         if self.idxExecProcess_load == 0:                     # Pusher 상승
-            self.set_gpioOut(self.gpioOut_pusherUp, True)
-            self.set_gpioOut(self.gpioOut_pusherDown, False)
+            self.gpioOut_pusherUp(True)
+            self.gpioOut_pusherDown(False)
             self.idxExecProcess_load += 1
         elif self.idxExecProcess_load == 1:                   # Pusher 상승 확인
             self.pusherError = PusherError.PUSHER_UP
-            if self.gpioIn_PusherUp:
+            if not self.gpioIn_PusherUp:
                 self.cntTimeOutExecProcess = 0
                 self.cntExecProcess = 0
                 self.idxExecProcess_load += 1
@@ -241,13 +226,13 @@ class MainPusher:
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_load += 1
         elif self.idxExecProcess_load == 3:                   # Pusher 후진
-            self.set_gpioOut(self.gpioOut_pusherFront, False)
-            self.set_gpioOut(self.gpioOut_pusherBack, True)
+            self.gpioOut_pusherFront(False)
+            self.gpioOut_pusherBack(True)
             self.cntExecProcess = 0
             self.idxExecProcess_load += 1
         elif self.idxExecProcess_load == 4:                   # Pusher 후진 확인
             self.pusherError = PusherError.PUSHER_BACK
-            if self.gpioIn_PusherBack:
+            if not self.gpioIn_PusherBack:
                 self.idxExecProcess_load = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
@@ -260,7 +245,7 @@ class MainPusher:
             self.isExecProcess_Unload = False
             self.pusherStatus = PusherStatus.ERROR
             self.pusherError = PusherError.LOAD_UNLOAD
-            self.replyMessage('S' + self.rxMessage[1:5] + errorCode)
+            self.replyMessage('Error' + errorCode)
 
 
 
@@ -292,18 +277,63 @@ class MainPusher:
 
 if __name__ == "__main__":
     cnt_msec = 0
+    server_ip = '192.168.1.2'
+    server_port = 8000
     main = MainPusher()
+
+    # 상태머신 구조
+    # 상태 : "DISCONNECTED", "CONNECTED"
+    conn_state = "CONNECTED" if TCPClient.is_initialized else "DISCONNECTED"
+
+    ipAddress = '192.168.1.105'
+    portNumber = 8005
+    gateway = '192.168.1.1'
+
+    reconnect_timer = 0
 
     while True:
         cnt_msec += 1
 
-        if not cnt_msec % 10:
-            main.func_10msec()
+        # 연결이 끊어진 경우에만 재접속 시도
+        if conn_state == "DISCONNECTED":
+            if reconnect_timer <= 0:
+                print("[*] Trying to reconnect to server...")
+                try:
+                    TCPClient.init(ipAddress=ipAddress, portNumber=portNumber, gateway=gateway, server_ip=server_ip, server_port=server_port)
+                    if TCPClient.is_initialized:
+                        print("[*] Reconnected to server")
+                        conn_state = 'CONNECTED'
+                    else:
+                        print("[*] Reconnect failed")
+                except Exception as e:
+                    print(f"[-] Reconnect error: {e}")
+                reconnect_timer = 3000
+            else:
+                reconnect_timer -= 1
 
-        if not cnt_msec % 25:
-            main.func_25msec()
+        elif conn_state == "CONNECTED":
+
+            #연결된 상태에서 연결이 끊어졌는지 체크
+            if not TCPClient.is_initialized:
+                print("[-] Lost connection to server")
+                conn_state = 'DISCONNECTED'
+
+        main.func_1msec()
+
+        if not cnt_msec % 10:
+            if TCPClient.is_initialized :
+                main.func_10msec()
+
+        if not cnt_msec % 20:
+            main.func_20msec()
+
+        if not cnt_msec % 50:
+            main.func_50msec()
 
         if not cnt_msec % 100:
             main.func_100msec()
+
+        if not cnt_msec % 500:
+            main.func_500msec()
 
         time.sleep_ms(1)
