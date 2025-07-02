@@ -351,6 +351,7 @@ if __name__ == "__main__":
             if not TCPClient.is_initialized:
                 print("[-] Lost connection to server")
                 conn_state = 'DISCONNECTED'
+                reconnect_timer = 0
 
         if not cnt_msec % 10:
             if TCPClient.is_initialized :

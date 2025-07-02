@@ -39,6 +39,7 @@ def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_p
             print(f"[*] Connected to TCP Server: {server_ip} : {server_port}")
 
             # ping 송신 스레드 시작
+            _ping_thread_running = False
             if not _ping_thread_running:
                 _thread.start_new_thread(_ping_sender, ())
                 _ping_thread_running = True
@@ -90,6 +91,11 @@ def read_from_socket():
         return b""
 
 def receive_data(self):
+    global tcpSocket, is_initialized
+    if tcpSocket is None:
+        is_initialized = False
+        return b""
+
     try:
         data = self.sock.recv(1024)  # 최대 1024바이트 수신
         if data :
@@ -97,7 +103,12 @@ def receive_data(self):
             return data
     except Exception as e :
         print(f"[클라이언트] Error: {str(e)}")
-        raise
+        is_initialized = False
+        if tcpSocket:
+            try: tcpSocket.close()
+            except:pass
+            tcpSocket = None
+        return b""
 
 def sendMessage(self, msg: str):
     global tcpSocket, is_initialized
