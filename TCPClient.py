@@ -4,12 +4,14 @@ from machine import Pin, SPI
 import network
 import socket
 import time
+import sys
 
 tcpSocket = None
-is_initialized = None
-_ping_thread_running = None
+is_initialized = False
+_ping_thread_running = False
 
 def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_port: int):
+    print("==> TCPClient.init() called")
     global tcpSocket, is_initialized, _ping_thread_running
 
     try:
@@ -19,35 +21,36 @@ def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_p
             except: pass
             tcpSocket = None
 
-            spi = SPI(0, 1_000_000, polarity=0, phase=0, mosi=Pin(19), miso=Pin(16), sck=Pin(18))
-            eth = network.WIZNET5K(spi, Pin(17), Pin(20))
-            eth.active(True)
+        spi = SPI(0, 1_000_000, polarity=0, phase=0, mosi=Pin(19), miso=Pin(16), sck=Pin(18))
+        eth = network.WIZNET5K(spi, Pin(17), Pin(20))
+        eth.active(True)
 
-            eth.ifconfig((ipAddress, '255.255.255.0', '8.8.8.8', gateway))
-            print("[*] Network Config:", eth.ifconfig())
-            print(f"[*] Attempting connection to... {server_ip}:{server_port}")
+        eth.ifconfig((ipAddress, '255.255.255.0', '8.8.8.8', gateway))
+        print("[*] Network Config:", eth.ifconfig())
+        print(f"[*] Attempting connection to... {server_ip}:{server_port}")
 
-            # 서버 접속 시도 (재시도 로직 포함)
-            try:
-                tcpSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                tcpSocket.bind(ipAddress, portNumber)
-                tcpSocket.connect((server_ip, server_port))
-                is_initialized = True
-                tcpSocket.setblocking(True)
-                print(f"[*] Connected to TCP Server: {server_ip} : {server_port}")
+        # 서버 접속 시도 (재시도 로직 포함)
+        try:
+            tcpSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            tcpSocket.bind((ipAddress, portNumber))
+            tcpSocket.connect((server_ip, server_port))
+            is_initialized = True
+            #tcpSocket.setblocking(True)
+            print(f"[*] Connected to TCP Server: {server_ip} : {server_port}")
 
-                # ping 송신 스레드 시작
-                if not _ping_thread_running:
-                    _thread.start_new_thread(_ping_sender, ())
-                    _ping_thread_running = True
+            # ping 송신 스레드 시작
+            if not _ping_thread_running:
+                _thread.start_new_thread(_ping_sender, ())
+                _ping_thread_running = True
 
-            except Exception as e:
-                print(f"[-] Unexpected Error: {e}")
-                is_initialized = False
-                if tcpSocket:
-                    try: tcpSocket.close()
-                    except: pass
-                    tcpSocket = None
+        except Exception as e:
+            print(f"[-] Unexpected Error: {e}")
+            sys.print_exception(e)
+            is_initialized = False
+            if tcpSocket:
+                try: tcpSocket.close()
+                except: pass
+                tcpSocket = None
 
     except Exception as e:
         print(f"[-] Initialization Error: {str(e)}")

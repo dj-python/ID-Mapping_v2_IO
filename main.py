@@ -1,6 +1,6 @@
 # H/W 제어 (실린더, 시그널 타워, 스위치 등등)
 
-from machine import Pin
+from machine import Pin, I2C
 import time
 import TCPClient
 
@@ -22,10 +22,11 @@ class PusherError:
 class MainPusher:
     cTemp = 0
 
-    def __init__(self):
+    def __init__(self, server_ip, server_port):
         self.idxExecProcess_load = None
         self.idxExecProcess_Unload = False
         self.isExecProcess_load = False
+        self.isExecProcess_Unload = False
         self.sysLed_pico = Pin(25, Pin.OUT)
 
         #region Init GPIO_OUT
@@ -45,14 +46,18 @@ class MainPusher:
         self.gpioIn_Start_L = Pin(6, Pin.IN)
         #end region
 
-        ipaddress = '192.168.1.105'
+        # Start 버튼 눌림 감지를 위한 시간 추적용 변수
+        self.start_btn_hold_start_time = None
+        self.mapping_start_sent = False
+        self.MAPPING_START_HOLD_MS = 500
+
+
+        ipAddress = '192.168.1.105'
         portNumber = 8005
         gateway = '192.168.1.1'
-        server_ip = '192.168.1.2'
-        server_port = 8000
 
         try:
-            TCPClient.init(ipAddress=ipaddress, portNumber=portNumber, server_ip= server_ip, server_port=server_port, gateway=gateway)
+            TCPClient.init(ipAddress=ipAddress, portNumber=portNumber, server_ip= server_ip, server_port=server_port, gateway=gateway)
         except Exception as e:
             print(f"[-] Initialization Error: {str(e)}")
 
@@ -73,8 +78,27 @@ class MainPusher:
 
         self.isInitedPusher = None
 
+    # Push button 2개가 0.5초 동안 눌린 상태이면 main PC 에 신호 보내는 코드
+    def check_and_send_mapping_start(self):
+        # 두 버튼이 모두 눌린 상태(False)여야만 동작
+        if not self.gpioIn_Start_L and not self.gpioIn_Start_R:
+            if self.start_btn_hold_start_time is None:
+                self.start_btn_hold_start_time = time.ticks_ms()
+            elif not self.mapping_start_sent:
+                held_ms = time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)
+                if held_ms >= self.MAPPING_START_HOLD_MS:
+                    TCPClient.sendMessage('Mapping start')
+                    print('[Mapping start] sent to server by Start_R + Start_L')
+                    self.mapping_start_sent = True
+        else:
+            self.start_btn_hold_start_time = None
+            self.mapping_start_sent = False
+
 
     def func_10msec(self):
+        # 버튼 지속 감지 및 메시지 전송
+        self.check_and_send_mapping_start()
+
         message, address = TCPClient.receive_data()
         if message is not None:
             self.rxMessage = message.decode('utf-8')
@@ -160,6 +184,13 @@ class MainPusher:
             self.pusherError = PusherError.INIT_PUSHER_POS
             self.isInitedPusher = False
             self.replyMessage('S' + self.rxMessage[1:5] + errorCode)
+
+
+    def temp_test(self):
+        pass
+
+
+
 
     def execProcess_load(self):
         if self.idxExecProcess_load == 0:                     # Pusher 초기상태 확인
@@ -253,7 +284,7 @@ class MainPusher:
         if self.rxMessage == 'Check_status':
             pass
         else:
-            TCPClient.sendMessage(self.TCP_Server, message)
+            TCPClient.sendMessage(message)
 
     def checkErrorCode(self):
         errorCode = '001'
@@ -277,17 +308,20 @@ class MainPusher:
 
 if __name__ == "__main__":
     cnt_msec = 0
+
+    ipAddress = '192.168.1.105'
+    portNumber = 8005
+    gateway = '192.168.1.1'
     server_ip = '192.168.1.2'
     server_port = 8000
-    main = MainPusher()
+
+    main = MainPusher(server_ip=server_ip, server_port=server_port)
 
     # 상태머신 구조
     # 상태 : "DISCONNECTED", "CONNECTED"
     conn_state = "CONNECTED" if TCPClient.is_initialized else "DISCONNECTED"
 
-    ipAddress = '192.168.1.105'
-    portNumber = 8005
-    gateway = '192.168.1.1'
+
 
     reconnect_timer = 0
 
@@ -318,22 +352,17 @@ if __name__ == "__main__":
                 print("[-] Lost connection to server")
                 conn_state = 'DISCONNECTED'
 
-        main.func_1msec()
-
         if not cnt_msec % 10:
             if TCPClient.is_initialized :
                 main.func_10msec()
 
-        if not cnt_msec % 20:
-            main.func_20msec()
+        if not cnt_msec % 25:
+            main.func_25msec()
 
-        if not cnt_msec % 50:
-            main.func_50msec()
+
 
         if not cnt_msec % 100:
             main.func_100msec()
 
-        if not cnt_msec % 500:
-            main.func_500msec()
 
         time.sleep_ms(1)
