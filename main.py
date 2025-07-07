@@ -49,7 +49,7 @@ class MainPusher:
         # Start 버튼 눌림 감지를 위한 시간 추적용 변수
         self.start_btn_hold_start_time = None
         self.mapping_start_sent = False
-        self.MAPPING_START_HOLD_MS = 500
+        self.MAPPING_START_HOLD_MS = 100
 
 
         ipAddress = '192.168.1.105'
@@ -78,31 +78,38 @@ class MainPusher:
 
         self.isInitedPusher = None
 
-    # Push button 2개가 0.5초 동안 눌린 상태이면 main PC 에 신호 보내는 코드
     def check_and_send_mapping_start(self):
-        # 두 버튼이 모두 눌린 상태(False)여야만 동작
-        if not self.gpioIn_Start_L and not self.gpioIn_Start_R:
+        left = self.gpioIn_Start_L.value()
+        right = self.gpioIn_Start_R.value()
+
+        if left == 0 and right == 0:
             if self.start_btn_hold_start_time is None:
                 self.start_btn_hold_start_time = time.ticks_ms()
+                print("Both buttons pressed, timer started")
             elif not self.mapping_start_sent:
                 held_ms = time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)
+                print(f"Buttons held for {held_ms} ms")
                 if held_ms >= self.MAPPING_START_HOLD_MS:
-                    TCPClient.sendMessage('Mapping start')
+                    print("Sending message: Mapping start")
+                    TCPClient.sendMessage('Mapping start\n')
                     print('[Mapping start] sent to server by Start_R + Start_L')
                     self.mapping_start_sent = True
         else:
+            if self.start_btn_hold_start_time is not None:
+                print(
+                    f"Buttons released after holding {time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)} ms")
             self.start_btn_hold_start_time = None
             self.mapping_start_sent = False
 
-
     def func_10msec(self):
+        #print("func_10msec called")
         # 버튼 지속 감지 및 메시지 전송
         self.check_and_send_mapping_start()
 
-        message, address = TCPClient.receive_data()
+        message = TCPClient.read_from_socket()
         if message is not None:
             self.rxMessage = message.decode('utf-8')
-            print(address, self.rxMessage, self.pusherStatus)
+            print(self.rxMessage, self.pusherStatus)
 
             # Init Pusher
             if self.rxMessage == 'initial_pusher':
@@ -150,6 +157,20 @@ class MainPusher:
             self.execProcess_Unload()
         elif self.isExecProcess_manualHandle:
             self.execProcess_manualHandle()
+
+    def func_500msec(self):
+        pass
+        # gpio_states = {
+        #     "PusherDown": self.gpioIn_PusherDown.value(),
+        #     "PusherUp": self.gpioIn_PusherUp.value(),
+        #     "PusherBack": self.gpioIn_PusherBack.value(),
+        #     "PusherFront": self.gpioIn_PusherFront.value(),
+        #     "STOP": self.gpioIn_STOP.value(),
+        #     "Start_R": self.gpioIn_Start_R.value(),
+        #     "Start_L": self.gpioIn_Start_L.value(),
+        # }
+        # print("[GPIO Input States 500ms]", gpio_states)
+
 
     def execProcess_setPusherPos(self):
         if self.idxExecProcess_initPusherPos == 0:                          # Pusher up
@@ -326,44 +347,53 @@ if __name__ == "__main__":
     reconnect_timer = 0
 
     while True:
-        cnt_msec += 1
+        try:
+            cnt_msec += 1
 
-        # 연결이 끊어진 경우에만 재접속 시도
-        if conn_state == "DISCONNECTED":
-            if reconnect_timer <= 0:
-                print("[*] Trying to reconnect to server...")
-                try:
-                    TCPClient.init(ipAddress=ipAddress, portNumber=portNumber, gateway=gateway, server_ip=server_ip, server_port=server_port)
-                    if TCPClient.is_initialized:
-                        print("[*] Reconnected to server")
-                        conn_state = 'CONNECTED'
-                    else:
-                        print("[*] Reconnect failed")
-                except Exception as e:
-                    print(f"[-] Reconnect error: {e}")
-                reconnect_timer = 3000
-            else:
-                reconnect_timer -= 1
+            # 연결이 끊어진 경우에만 재접속 시도
+            if conn_state == "DISCONNECTED":
+                if reconnect_timer <= 0:
+                    print("[*] Trying to reconnect to server...")
+                    try:
+                        TCPClient.init(ipAddress=ipAddress, portNumber=portNumber, gateway=gateway, server_ip=server_ip, server_port=server_port)
+                        if TCPClient.is_initialized:
+                            print("[*] Reconnected to server")
+                            conn_state = 'CONNECTED'
+                        else:
+                            print("[*] Reconnect failed")
+                    except Exception as e:
+                        print(f"[-] Reconnect error: {e}")
+                    reconnect_timer = 3000
+                else:
+                    reconnect_timer -= 1
 
-        elif conn_state == "CONNECTED":
+            elif conn_state == "CONNECTED":
 
-            #연결된 상태에서 연결이 끊어졌는지 체크
-            if not TCPClient.is_initialized:
-                print("[-] Lost connection to server")
-                conn_state = 'DISCONNECTED'
-                reconnect_timer = 0
+                #연결된 상태에서 연결이 끊어졌는지 체크
+                if not TCPClient.is_initialized:
+                    print("[-] Lost connection to server")
+                    conn_state = 'DISCONNECTED'
+                    reconnect_timer = 0
 
-        if not cnt_msec % 10:
-            if TCPClient.is_initialized :
-                main.func_10msec()
+            if not cnt_msec % 10:
+                if TCPClient.is_initialized :
+                    main.func_10msec()
 
-        if not cnt_msec % 25:
-            main.func_25msec()
-
-
-
-        if not cnt_msec % 100:
-            main.func_100msec()
+            if not cnt_msec % 25:
+                main.func_25msec()
 
 
-        time.sleep_ms(1)
+
+            if not cnt_msec % 100:
+                main.func_100msec()
+
+            if not cnt_msec % 500:
+                main.func_500msec()
+
+
+            time.sleep_ms(1)
+        except Exception as e:
+            print("Exception in main loop", e)
+            import sys
+            sys.print_exception(e)
+            # sys.exit()
