@@ -22,6 +22,8 @@ def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_p
             except:
                 pass
             tcpSocket = None
+        is_initialized = False
+        _ping_thread_running = False
 
         spi = SPI(0, 1_000_000, polarity=0, phase=0, mosi=Pin(19), miso=Pin(16), sck=Pin(18))
         eth = network.WIZNET5K(spi, Pin(17), Pin(20))
@@ -36,8 +38,8 @@ def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_p
             tcpSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             tcpSocket.bind((ipAddress, portNumber))
             tcpSocket.connect((server_ip, server_port))
-            is_initialized = True
             tcpSocket.setblocking(False)
+            is_initialized = True
             print(f"[*] Connected to TCP Server: {server_ip} : {server_port}")
 
             # ping 송신 스레드가 중복 없이 반드시 새로 시작되도록 보장
@@ -77,6 +79,11 @@ def _ping_sender():
             except Exception as e:
                 print(f"[Error] ping send failed: {e}")
                 is_initialized = False
+                try:
+                    tcpSocket.close()
+                except:
+                    pass
+                tcpSocket = None
                 break
             time.sleep(3)
     except Exception as e:
@@ -90,7 +97,7 @@ def read_from_socket():
     global tcpSocket, is_initialized
     if tcpSocket is None:
         is_initialized = False
-        return b""
+        return None
     try:
         data = tcpSocket.recv(1024)
         if not data:
@@ -159,7 +166,7 @@ def receive_data(self):
 def sendMessage(msg: str):
     global tcpSocket, is_initialized
     try:
-        if not is_initialized:
+        if not is_initialized or tcpSocket is None:
             print("[클라이언트] sendMessage: Not initialized, message not sent.")
             return
         tcpSocket.sendall(msg.encode('utf-8'))
@@ -198,9 +205,14 @@ def sendMessage(self, msg: str):
 
 
 
-def close_connection(self):
-    global tcpSocket
+def close_connection():
+    global tcpSocket, is_initialized, _ping_thread_running
     if tcpSocket:
-        tcpSocket.close()
+        try:
+            tcpSocket.close()
+        except:
+            pass
         tcpSocket = None
-        print("[*] 서버 연결 종료")
+    is_initialized = False
+    _ping_thread_running = False
+    print("[*] 서버 연결 종료")

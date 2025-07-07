@@ -37,14 +37,17 @@ class MainPusher:
         #end region
 
         #region Init GPIO_IN
-        self.gpioIn_PusherDown = Pin(0, Pin.IN)
-        self.gpioIn_PusherUp = Pin(1, Pin.IN)
-        self.gpioIn_PusherBack = Pin(2, Pin.IN)
-        self.gpioIn_PusherFront = Pin(3, Pin.IN)
-        self.gpioIn_STOP = Pin(4, Pin.IN)
-        self.gpioIn_Start_R = Pin(5, Pin.IN)
-        self.gpioIn_Start_L = Pin(6, Pin.IN)
+        self.gpioIn_PusherDown = Pin(0, Pin.IN, Pin.PULL_UP)
+        self.gpioIn_PusherUp = Pin(1, Pin.IN, Pin.PULL_UP)
+        self.gpioIn_PusherBack = Pin(2, Pin.IN, Pin.PULL_UP)
+        self.gpioIn_PusherFront = Pin(3, Pin.IN, Pin.PULL_UP)
+        self.gpioIn_STOP = Pin(4, Pin.IN, Pin.PULL_UP)
+        self.gpioIn_Start_R = Pin(5, Pin.IN, Pin.PULL_UP)
+        self.gpioIn_Start_L = Pin(6, Pin.IN, Pin.PULL_UP)
         #end region
+
+        self.gpioIn_Start_R.value(1)
+        self.gpioIn_Start_L.value(1)
 
         # Start 버튼 눌림 감지를 위한 시간 추적용 변수
         self.start_btn_hold_start_time = None
@@ -52,10 +55,18 @@ class MainPusher:
         self.MAPPING_START_HOLD_MS = 100
 
 
-        ipAddress = '192.168.1.105'
-        portNumber = 8005
-        gateway = '192.168.1.1'
+        # ipAddress = '192.168.1.105'
+        # portNumber = 8005
+        # gateway = '192.168.1.1'
 
+        self.server_ip = server_ip
+        self.server_port = server_port
+        self.ipAddress = '192.168.1.105'
+        self.portNumber = 8005
+        self.gateway = '192.168.1.1'
+        self.try_init_tcp()
+
+    def try_init_tcp(self):
         try:
             TCPClient.init(ipAddress=ipAddress, portNumber=portNumber, server_ip= server_ip, server_port=server_port, gateway=gateway)
         except Exception as e:
@@ -160,6 +171,9 @@ class MainPusher:
 
     def func_500msec(self):
         pass
+        # self.sysLed_pico.toggle()
+
+        # 아래 코드는 gpio High(0), low(1) 상태를 0.5초마다 프린트 해주는 테스트 코드임.
         # gpio_states = {
         #     "PusherDown": self.gpioIn_PusherDown.value(),
         #     "PusherUp": self.gpioIn_PusherUp.value(),
@@ -327,6 +341,12 @@ class MainPusher:
     def execProcess_manualHandle(self):
         pass
 
+
+
+
+# 안정적 재접속을 위해 Main loop를 수정함(7/7).
+# Write card 함수는 변경하지 않았으므로 문제가 있으면 원복할 것.
+
 if __name__ == "__main__":
     cnt_msec = 0
 
@@ -341,39 +361,29 @@ if __name__ == "__main__":
     # 상태머신 구조
     # 상태 : "DISCONNECTED", "CONNECTED"
     conn_state = "CONNECTED" if TCPClient.is_initialized else "DISCONNECTED"
-
-
-
     reconnect_timer = 0
 
     while True:
         try:
             cnt_msec += 1
 
-            # 연결이 끊어진 경우에만 재접속 시도
-            if conn_state == "DISCONNECTED":
+            # 항상 TCPClient 상태 확인, 끊어진 경우 즉시 재접속 시도
+            if not TCPClient.is_initialized:
+                conn_state = "DISCONNECTED"
                 if reconnect_timer <= 0:
                     print("[*] Trying to reconnect to server...")
-                    try:
-                        TCPClient.init(ipAddress=ipAddress, portNumber=portNumber, gateway=gateway, server_ip=server_ip, server_port=server_port)
-                        if TCPClient.is_initialized:
-                            print("[*] Reconnected to server")
-                            conn_state = 'CONNECTED'
-                        else:
-                            print("[*] Reconnect failed")
-                    except Exception as e:
-                        print(f"[-] Reconnect error: {e}")
-                    reconnect_timer = 3000
+                    main.try_init_tcp()
+                    if TCPClient.is_initialized:
+                        print("[*] Reconnected to server")
+                        conn_state = 'CONNECTED'
+                        reconnect_timer = 0
+                    else:
+                        print("[*] Reconnect failed")
+                        reconnect_timer = 3000
                 else:
                     reconnect_timer -= 1
-
-            elif conn_state == "CONNECTED":
-
-                #연결된 상태에서 연결이 끊어졌는지 체크
-                if not TCPClient.is_initialized:
-                    print("[-] Lost connection to server")
-                    conn_state = 'DISCONNECTED'
-                    reconnect_timer = 0
+            else:
+                conn_state = 'CONNECTED'
 
             if not cnt_msec % 10:
                 if TCPClient.is_initialized :
@@ -382,16 +392,17 @@ if __name__ == "__main__":
             if not cnt_msec % 25:
                 main.func_25msec()
 
-
-
             if not cnt_msec % 100:
                 main.func_100msec()
 
             if not cnt_msec % 500:
                 main.func_500msec()
 
-
             time.sleep_ms(1)
+        except KeyboardInterrupt:
+            print("KeyboardInterrupt: cleaning up TCP...")
+            TCPClient.close_connection()
+            break
         except Exception as e:
             print("Exception in main loop", e)
             import sys
