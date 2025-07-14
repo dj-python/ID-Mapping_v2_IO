@@ -41,6 +41,12 @@ def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_p
             tcpSocket.setblocking(False)
             is_initialized = True
             tcpSocket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            try:
+                tcpSocket.setsockopt(socket.IPPROTO_TCP, 0x3, 30)       # TCP_KEEPIDEL 30초
+                tcpSocket.setsockopt(socket.IPPROTO_TCP, 0x4, 10)       # TCP_KEEPINTVL 10초
+                tcpSocket.setsockopt(socket.IPPROTO_TCP, 0x5, 3)        # TCP_KEEPCNT 3회
+            except Exception as e:
+                print(f"[*] Custom Keep-Alive 옵션 적용 실패(무시):", e)
             print(f"[*] Connected to TCP Server: {server_ip} : {server_port}")
 
             # ping 송신 스레드가 중복 없이 반드시 새로 시작되도록 보장
@@ -75,7 +81,7 @@ def _ping_sender():
     try:
         while is_initialized and tcpSocket:
             try:
-                tcpSocket.sendall("ping\n")
+                tcpSocket.sendall(b"ping\n")
                 print("[*] Ping sent")
             except Exception as e:
                 print(f"[Error] ping send failed: {e}")
@@ -86,7 +92,7 @@ def _ping_sender():
                     pass
                 tcpSocket = None
                 break
-            time.sleep(3)
+            time.sleep(1)
     except Exception as e:
         print(f"[Error] ping sender thread error: {e}")
         is_initialized = False
@@ -102,7 +108,6 @@ def read_from_socket():
     try:
         data = tcpSocket.recv(1024)
         if not data:
-            # 소켓이 닫힘(상대방이 종료)
             print("[*] Server closed connection (read 0 bytes)")
             is_initialized = False
             try:
@@ -112,12 +117,10 @@ def read_from_socket():
             tcpSocket = None
             return None
         return data
-    except (OSError, Exception) as e:
-        # OSError: 데이터 없음, 그 외 Exception : 연결 종료 등
+    except OSError as e:
+        # 논블로킹 소켓에서 데이터가 없을 때는 연결 끊지 않음
         if hasattr(e, 'errno') and e.errno == 11:
-            #errno 11 : Resource temporarily unavailable (non-blocking일 때 데이터 없음)
             return None
-
         print(f"[Error] socket recv failed: {e}")
         is_initialized = False
         try:
@@ -126,43 +129,15 @@ def read_from_socket():
             pass
         tcpSocket = None
         return None
-
-def receive_data(self):
-    global tcpSocket, is_initialized
-    if tcpSocket is None:
-        is_initialized = False
-        return b""
-
-    try:
-        data = self.sock.recv(1024)
-        if data:
-            print(f"[클라이언트] 수신된 데이터: {data.decode('utf-8')}")
-            return data
-        else:
-            # 소켓이 닫힘(상대방이 종료)
-            is_initialized = False
-            try:
-                self.sock.close()
-            except:
-                pass
-            if tcpSocket:
-                try:
-                    tcpSocket.close()
-                except:
-                    pass
-                tcpSocket = None
-            return b""
     except Exception as e:
-        print(f"[클라이언트] Error: {str(e)}")
+        print(f"[Error] socket recv failed: {e}")
         is_initialized = False
-        if tcpSocket:
-            try:
-                tcpSocket.close()
-            except:
-                pass
-            tcpSocket = None
-        return b""
-
+        try:
+            tcpSocket.close()
+        except:
+            pass
+        tcpSocket = None
+        return None
 
 def sendMessage(msg: str):
     global tcpSocket, is_initialized
@@ -181,30 +156,6 @@ def sendMessage(msg: str):
             except:
                 pass
             tcpSocket = None
-
-
-
-
-"""
-def sendMessage(self, msg: str):
-    global tcpSocket, is_initialized
-    try:
-        tcpSocket.sendall(msg.encode('utf-8'))
-        print(f"[클라이언트] Message sent: {msg}")
-    except Exception as e:
-        print(f"[클라이언트] Send Error: {str(e)}")
-        is_initialized = False
-        if tcpSocket:
-            try:
-                tcpSocket.close()
-            except:
-                pass
-            tcpSocket = None
-"""
-
-
-
-
 
 def close_connection():
     global tcpSocket, is_initialized, _ping_thread_running
