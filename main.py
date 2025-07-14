@@ -116,6 +116,7 @@ class MainPusher:
         #print("func_10msec called")
         # 버튼 지속 감지 및 메시지 전송
         self.check_and_send_mapping_start()
+        time.sleep(0.01)
 
         message = TCPClient.read_from_socket()
         if message is not None:
