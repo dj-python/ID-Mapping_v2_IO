@@ -46,6 +46,7 @@ class MainPusher:
         self.gpioIn_Start_L = Pin(6, Pin.IN, Pin.PULL_UP)
         #end region
 
+        print("Start_R:", self.gpioIn_Start_R.value(), "Start_L", self.gpioIn_Start_L.value())
         self.gpioIn_Start_R.value(1)
         self.gpioIn_Start_L.value(1)
 

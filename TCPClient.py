@@ -40,6 +40,7 @@ def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_p
             tcpSocket.connect((server_ip, server_port))
             tcpSocket.setblocking(False)
             is_initialized = True
+            tcpSocket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             print(f"[*] Connected to TCP Server: {server_ip} : {server_port}")
 
             # ping 송신 스레드가 중복 없이 반드시 새로 시작되도록 보장
