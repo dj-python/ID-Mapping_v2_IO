@@ -36,15 +36,12 @@ def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_p
         # 서버 접속 시도 (재시도 로직 포함)
         try:
             tcpSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            tcpSocket.bind((ipAddress, portNumber))
+            #tcpSocket.bind((ipAddress, portNumber))
             tcpSocket.connect((server_ip, server_port))
             tcpSocket.setblocking(False)
             is_initialized = True
-            tcpSocket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             try:
-                tcpSocket.setsockopt(socket.IPPROTO_TCP, 0x3, 30)       # TCP_KEEPIDEL 30초
-                tcpSocket.setsockopt(socket.IPPROTO_TCP, 0x4, 10)       # TCP_KEEPINTVL 10초
-                tcpSocket.setsockopt(socket.IPPROTO_TCP, 0x5, 3)        # TCP_KEEPCNT 3회
+                tcpSocket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             except Exception as e:
                 print(f"[*] Custom Keep-Alive 옵션 적용 실패(무시):", e)
             print(f"[*] Connected to TCP Server: {server_ip} : {server_port}")
@@ -92,7 +89,7 @@ def _ping_sender():
                     pass
                 tcpSocket = None
                 break
-            time.sleep(3)
+            time.sleep(2)
     except Exception as e:
         print(f"[Error] ping sender thread error: {e}")
         is_initialized = False

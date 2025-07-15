@@ -387,7 +387,7 @@ if __name__ == "__main__":
                         reconnect_timer = 0
                     else:
                         print("[*] Reconnect failed")
-                        reconnect_timer = 3000
+                        reconnect_timer = 100
                 else:
                     reconnect_timer -= 1
             else:
