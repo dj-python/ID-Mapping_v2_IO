@@ -92,7 +92,7 @@ def _ping_sender():
                     pass
                 tcpSocket = None
                 break
-            time.sleep(1)
+            time.sleep(3)
     except Exception as e:
         print(f"[Error] ping sender thread error: {e}")
         is_initialized = False
@@ -108,6 +108,7 @@ def read_from_socket():
     try:
         data = tcpSocket.recv(1024)
         if not data:
+            # 실제로 연결이 닫힌 경우만!
             print("[*] Server closed connection (read 0 bytes)")
             is_initialized = False
             try:
@@ -118,7 +119,7 @@ def read_from_socket():
             return None
         return data
     except OSError as e:
-        # 논블로킹 소켓에서 데이터가 없을 때는 연결 끊지 않음
+        # 데이터 없음(논블로킹)일 때 연결 유지
         if hasattr(e, 'errno') and e.errno == 11:
             return None
         print(f"[Error] socket recv failed: {e}")

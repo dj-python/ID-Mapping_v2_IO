@@ -65,13 +65,6 @@ class MainPusher:
         self.ipAddress = '192.168.1.105'
         self.portNumber = 8005
         self.gateway = '192.168.1.1'
-        self.try_init_tcp()
-
-    def try_init_tcp(self):
-        try:
-            TCPClient.init(ipAddress=ipAddress, portNumber=portNumber, server_ip= server_ip, server_port=server_port, gateway=gateway)
-        except Exception as e:
-            print(f"[-] Initialization Error: {str(e)}")
 
         self.rxMessage = str()
 
@@ -89,6 +82,19 @@ class MainPusher:
         self.idxExecProcess_initPusherPos = 0
 
         self.isInitedPusher = None
+        self.try_init_tcp()
+
+    def try_init_tcp(self):
+        try:
+            TCPClient.init(ipAddress=self.ipAddress,
+                           portNumber=self.portNumber,
+                           server_ip= server_ip,
+                           server_port=self.server_port,
+                           gateway=self.gateway)
+        except Exception as e:
+            print(f"[-] Initialization Error: {str(e)}")
+
+
 
     def check_and_send_mapping_start(self):
         left = self.gpioIn_Start_L.value()
