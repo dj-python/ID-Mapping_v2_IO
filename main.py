@@ -163,6 +163,17 @@ class MainPusher:
                 self.cntTimeOutExecProcess = 0
                 self.pusherStatus = PusherStatus.DOING
 
+            elif self.rxMessage == 'Pusher front':
+                print('rxMessage Pusher front received')
+                if self.pusherStatus is PusherStatus.READY:
+                    self.idxExecProcess_load = 0
+                    self.isExecProcess_load=True
+
+            elif self.rxMessage == 'Pusher back':
+                print('rxMessage Pusher back received')
+                if self.pusherStatus is PusherStatus.READY:
+                    self.idxExecProcess_initPusherPos = 0
+                    self.isExecProcess_Unload = True
 
     def func_25msec(self):
         if self.isExecProcess_initPusherPos:
@@ -192,7 +203,6 @@ class MainPusher:
         #     "Start_L": self.gpioIn_Start_L.value(),
         # }
         # print("[GPIO Input States 500ms]", gpio_states)
-
 
     def execProcess_setPusherPos(self):
         if self.idxExecProcess_initPusherPos == 0:                          # Pusher up
@@ -228,16 +238,11 @@ class MainPusher:
             self.isInitedPusher = False
             self.replyMessage('S' + self.rxMessage[1:5] + errorCode)
 
-
-    def temp_test(self):
-        pass
-
-
-
-
     def execProcess_load(self):
+        print('exeProcess_load started')
         if self.idxExecProcess_load == 0:                     # Pusher 초기상태 확인
             if not self.gpioIn_PusherUp and not self.gpioIn_PusherBack:
+                print('gpioIn_PusherUp and gpioIn_PusherBack error')
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_load += 1
             else:
