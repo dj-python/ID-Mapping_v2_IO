@@ -182,7 +182,9 @@ class MainPusher:
             elif self.rxMessage == 'Pusher front':
                 print('rxMessage Pusher front received')
                 # READY 가드 무시: 강제 시작
-                self.gpioOut_pusherFront.value(1)
+                self.set_out(self.gpioOut_pusherBack, True)
+                time.sleep(0.1)
+                self.set_out(self.gpioOut_pusherFront, False)
 
 
                 # self.idxExecProcess_load = 0
