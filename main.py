@@ -19,12 +19,16 @@ class PusherError:
     INIT_PUSHER_POS = 'ERROR_PUSHER_INITIAL'
     LOAD_UNLOAD = 'ERROR_LOAD_UNLOAD'
 
+# 극성 설정: 하드웨어가 Active-Low라면 True (출력 On=0, 입력 감지=0)
+ACTIVE_LOW_IN = True
+ACTIVE_LOW_OUT = True
+
 class MainPusher:
     cTemp = 0
 
     def __init__(self, server_ip, server_port):
         self.idxExecProcess_load = None
-        self.idxExecProcess_Unload = False
+        self.idxExecProcess_Unload = 0
         self.isExecProcess_load = False
         self.isExecProcess_Unload = False
         self.sysLed_pico = Pin(25, Pin.OUT)
@@ -36,7 +40,7 @@ class MainPusher:
         self.gpioOut_pusherFront = Pin(15, Pin.OUT)
         #end region
 
-        #region Init GPIO_IN
+        #region Init GPIO_IN (풀업: 일반적으로 Active-Low)
         self.gpioIn_PusherDown = Pin(0, Pin.IN, Pin.PULL_UP)
         self.gpioIn_PusherUp = Pin(1, Pin.IN, Pin.PULL_UP)
         self.gpioIn_PusherBack = Pin(2, Pin.IN, Pin.PULL_UP)
@@ -47,18 +51,11 @@ class MainPusher:
         #end region
 
         print("Start_R:", self.gpioIn_Start_R.value(), "Start_L", self.gpioIn_Start_L.value())
-        self.gpioIn_Start_R.value(1)
-        self.gpioIn_Start_L.value(1)
 
         # Start 버튼 눌림 감지를 위한 시간 추적용 변수
         self.start_btn_hold_start_time = None
         self.mapping_start_sent = False
         self.MAPPING_START_HOLD_MS = 100
-
-
-        # ipAddress = '192.168.1.105'
-        # portNumber = 8005
-        # gateway = '192.168.1.1'
 
         self.server_ip = server_ip
         self.server_port = server_port
@@ -77,24 +74,44 @@ class MainPusher:
         self.pusherStatus = PusherStatus.UNKNOWN
         self.pusherError = PusherError.NONE
 
-        self.isInitedSocket = False
         self.isExecProcess_initPusherPos = False
         self.idxExecProcess_initPusherPos = 0
 
         self.isInitedPusher = None
         self.try_init_tcp()
+        self.init_gpioOut()
+
+    def init_gpioOut(self):
+        self.set_out(self.gpioOut_pusherFront, False)
+        self.set_out(self.gpioOut_pusherUp, True)
+        self.set_out(self.gpioOut_pusherDown, False)
+        self.set_out(self.gpioOut_pusherBack, True)
+
+
+
+    # 출력/입력 헬퍼
+    def set_out(self, pin: Pin, on: bool):
+        # Active-Low 출력이면 on=True일 때 0을 출력
+        if ACTIVE_LOW_OUT:
+            pin.value(0 if on else 1)
+        else:
+            pin.value(1 if on else 0)
+
+    def in_active(self, pin: Pin) -> bool:
+        v = pin.value()
+        return (v == 0) if ACTIVE_LOW_IN else (v == 1)
 
     def try_init_tcp(self):
         try:
-            TCPClient.init(ipAddress=self.ipAddress,
-                           portNumber=self.portNumber,
-                           server_ip= server_ip,
-                           server_port=self.server_port,
-                           gateway=self.gateway)
+            TCPClient.init(
+                ipAddress=self.ipAddress,
+                portNumber=self.portNumber,
+                server_ip=self.server_ip,
+                server_port=self.server_port,
+                gateway=self.gateway
+            )
         except Exception as e:
             print(f"[-] Initialization Error: {str(e)}")
-
-
 
     def check_and_send_mapping_start(self):
         left = self.gpioIn_Start_L.value()
@@ -114,29 +131,24 @@ class MainPusher:
                     self.mapping_start_sent = True
         else:
             if self.start_btn_hold_start_time is not None:
-                print(
-                    f"Buttons released after holding {time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)} ms")
+                print(f"Buttons released after holding {time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)} ms")
             self.start_btn_hold_start_time = None
             self.mapping_start_sent = False
 
     def func_10msec(self):
-        #print("func_10msec called")
-        # 버튼 지속 감지 및 메시지 전송
         self.check_and_send_mapping_start()
-        time.sleep(0.01)
 
         message = TCPClient.read_from_socket()
         if message is not None:
-            self.rxMessage = message.decode('utf-8')
-            print(self.rxMessage, self.pusherStatus)
+            self.rxMessage = message.decode('utf-8').strip()
+            print("[RX]", self.rxMessage, "status:", self.pusherStatus)
 
-            # Init Pusher
             if self.rxMessage == 'initial_pusher':
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_initPusherPos = 0
                 self.pusherStatus = PusherStatus.DOING
                 self.isExecProcess_initPusherPos = True
-            # Reset Pusher
+
             elif self.rxMessage == 'Reset':
                 if self.isInitedPusher:
                     self.pusherStatus = PusherStatus.READY
@@ -146,41 +158,56 @@ class MainPusher:
                     self.replyMessage('Reset failed')
 
             elif self.rxMessage == 'Start':
-                if self.pusherStatus is PusherStatus.READY:
+                if self.pusherStatus == PusherStatus.READY:
                     self.idxExecProcess_load = 0
                     self.isExecProcess_load = True
-                    # unit operation
+                    print("[Start] load started")
                 else:
                     self.idxExecProcess_unit0p = 0
                     self.isExecProcess_manualHandle = True
+                    print("[Start] manual handle started (not READY)")
                 self.cntTimeOutExecProcess = 0
                 self.pusherStatus = PusherStatus.DOING
 
             elif self.rxMessage == 'Finish':
-                if self.pusherStatus is PusherStatus.READY:
+                if self.pusherStatus == PusherStatus.READY:
                     self.idxExecProcess_Unload = 0
                     self.isExecProcess_Unload = True
+                    print("[Finish] unload started")
+                else:
+                    print("[Finish] ignored (not READY)")
                 self.cntTimeOutExecProcess = 0
                 self.pusherStatus = PusherStatus.DOING
 
             elif self.rxMessage == 'Pusher front':
                 print('rxMessage Pusher front received')
-                if self.pusherStatus is PusherStatus.READY:
-                    self.idxExecProcess_load = 0
-                    self.isExecProcess_load=True
+                # READY 가드 무시: 강제 시작
+                self.gpioOut_pusherFront.value(1)
+
+
+                # self.idxExecProcess_load = 0
+                # self.isExecProcess_load = True
+                # self.cntTimeOutExecProcess = 0
+                # self.pusherError = PusherError.NONE
+                # self.pusherStatus = PusherStatus.DOING
+                # print("[Pusher front] load forced start")
 
             elif self.rxMessage == 'Pusher back':
                 print('rxMessage Pusher back received')
-                if self.pusherStatus is PusherStatus.READY:
-                    self.idxExecProcess_initPusherPos = 0
-                    self.isExecProcess_Unload = True
+                # READY 가드 무시: 강제 시작
+                self.idxExecProcess_Unload = 0
+                self.isExecProcess_Unload = True
+                self.cntTimeOutExecProcess = 0
+                self.pusherError = PusherError.NONE
+                self.pusherStatus = PusherStatus.DOING
+                print("[Pusher back] unload forced start")
 
     def func_25msec(self):
         if self.isExecProcess_initPusherPos:
             self.execProcess_setPusherPos()
 
-    # 검사 시작(load), 검사 종료(unload), 수동 제어
     def func_100msec(self):
+        print(f"[100ms] flags load={self.isExecProcess_load}, unload={self.isExecProcess_Unload}, manual={self.isExecProcess_manualHandle} | idx_load={self.idxExecProcess_load}, idx_unload={self.idxExecProcess_Unload}, status={self.pusherStatus}")
         if self.isExecProcess_load:
             self.execProcess_load()
         elif self.isExecProcess_Unload:
@@ -190,48 +217,39 @@ class MainPusher:
 
     def func_500msec(self):
         pass
-        # self.sysLed_pico.toggle()
-
-        # 아래 코드는 gpio High(0), low(1) 상태를 0.5초마다 프린트 해주는 테스트 코드임.
-        # gpio_states = {
-        #     "PusherDown": self.gpioIn_PusherDown.value(),
-        #     "PusherUp": self.gpioIn_PusherUp.value(),
-        #     "PusherBack": self.gpioIn_PusherBack.value(),
-        #     "PusherFront": self.gpioIn_PusherFront.value(),
-        #     "STOP": self.gpioIn_STOP.value(),
-        #     "Start_R": self.gpioIn_Start_R.value(),
-        #     "Start_L": self.gpioIn_Start_L.value(),
-        # }
-        # print("[GPIO Input States 500ms]", gpio_states)
 
     def execProcess_setPusherPos(self):
+        # 초기 위치 설정
         if self.idxExecProcess_initPusherPos == 0:                          # Pusher up
-            self.gpioOut_pusherUp(True)
-            self.gpioOut_pusherDown(False)
+            self.set_out(self.gpioOut_pusherUp, True)
+            self.set_out(self.gpioOut_pusherDown, False)
             self.idxExecProcess_initPusherPos += 1
-        elif self.idxExecProcess_initPusherPos == 1:
-            self.pusherError = PusherError.PUSHER_UP                        # Pusher up 확인
-            if self.gpioIn_PusherUp:
+
+        elif self.idxExecProcess_initPusherPos == 1:                        # Pusher up 확인
+            self.pusherError = PusherError.PUSHER_UP
+            if self.in_active(self.gpioIn_PusherUp):
                 self.cntExecProcess = 0
                 self.idxExecProcess_initPusherPos += 1
+
         elif self.idxExecProcess_initPusherPos == 2:                        # 125msec 대기
             self.cntExecProcess += 1
             if self.cntExecProcess >= 5:                                    # Pusher Back
-                self.gpioOut_pusherBack(True)
-                self.gpioOut_pusherFront(False)
+                self.set_out(self.gpioOut_pusherBack, True)
+                self.set_out(self.gpioOut_pusherFront, False)
                 self.idxExecProcess_initPusherPos += 1
+
         elif self.idxExecProcess_initPusherPos == 3:                        # Pusher Back 확인
             self.pusherError = PusherError.PUSHER_BACK
-            if self.gpioIn_PusherBack :
+            if self.in_active(self.gpioIn_PusherBack):
                 self.pusherError = PusherError.NONE
                 self.pusherStatus = PusherStatus.READY
-                self.isInitedPusher = True                                  # 초기화 완료 처리
-                self.replyMessage('S' + self.rxMessage[1:5] + '000')        # Init 완료 송신
+                self.isInitedPusher = True
+                self.isExecProcess_initPusherPos = False
+                self.replyMessage('S' + self.rxMessage[1:5] + '000')
 
         self.cntTimeOutExecProcess += 1
-        if self.cntTimeOutExecProcess >= 400 :                              # 8초 경과시 에러
+        if self.cntTimeOutExecProcess >= 400:                               # 8초 타임아웃
             errorCode = self.checkErrorCode()
-
             self.isExecProcess_initPusherPos = False
             self.pusherStatus = PusherStatus.ERROR
             self.pusherError = PusherError.INIT_PUSHER_POS
@@ -239,49 +257,61 @@ class MainPusher:
             self.replyMessage('S' + self.rxMessage[1:5] + errorCode)
 
     def execProcess_load(self):
-        print('exeProcess_load started')
-        if self.idxExecProcess_load == 0:                     # Pusher 초기상태 확인
-            if not self.gpioIn_PusherUp and not self.gpioIn_PusherBack:
-                print('gpioIn_PusherUp and gpioIn_PusherBack error')
+        print('execProcess_load started')
+
+        if self.idxExecProcess_load == 0:                     # 초기상태 확인 (Up, Back 감지되어야)
+            if self.in_active(self.gpioIn_PusherUp) and self.in_active(self.gpioIn_PusherBack):
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_load += 1
             else:
-                if self.gpioIn_PusherUp:
+                if not self.in_active(self.gpioIn_PusherUp):
                     self.pusherError = PusherError.PUSHER_UP
-                elif self.gpioIn_PusherBack:
+                elif not self.in_active(self.gpioIn_PusherBack):
                     self.pusherError = PusherError.PUSHER_BACK
+                return
+
         if self.idxExecProcess_load == 1:                     # Pusher 전진 동작
-            self.gpioOut_pusherFront(True)
-            self.gpioOut_pusherBack(False)
+            self.set_out(self.gpioOut_pusherFront, True)
+            self.set_out(self.gpioOut_pusherBack, False)
+            print(f"[load idx1] OUT Front=ON, Back=OFF (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+            print(f"[load idx1] OUT raw levels Front={self.gpioOut_pusherFront.value()}, Back={self.gpioOut_pusherBack.value()}")
             self.idxExecProcess_load += 1
+
         elif self.idxExecProcess_load == 2:                   # Pusher 전진 확인
             self.pusherError = PusherError.PUSHER_FRONT
-            if not self.gpioIn_PusherFront:
+            fv = self.gpioIn_PusherFront.value()
+            print(f"[load idx2] Front sensor raw={fv} (active={'0' if ACTIVE_LOW_IN else '1'})")
+            if self.in_active(self.gpioIn_PusherFront):
                 self.cntTimeOutExecProcess = 0
                 self.cntExecProcess = 0
                 self.idxExecProcess_load += 1
-        elif self.idxExecProcess_load == 3:                   # delay 500ms 부여 구간
+
+        elif self.idxExecProcess_load == 3:                   # delay 500ms (100ms * 5)
             self.cntExecProcess += 1
             if self.cntExecProcess >= 5:
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_load += 1
-        elif self.idxExecProcess_load ==4:                   # Pusher 하강 동작
-            self.gpioOut_pusherUp(False)
-            self.gpioOut_pusherDown(True)
+
+        elif self.idxExecProcess_load == 4:                   # Pusher 하강
+            self.set_out(self.gpioOut_pusherUp, False)
+            self.set_out(self.gpioOut_pusherDown, True)
+            print(f"[load idx4] OUT Up=OFF, Down=ON (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
             self.cntExecProcess = 0
             self.idxExecProcess_load += 1
+
         elif self.idxExecProcess_load == 5:                   # Pusher 하강 확인
             self.pusherError = PusherError.PUSHER_DOWN
-            if not self.gpioIn_PusherDown:
+            dv = self.gpioIn_PusherDown.value()
+            print(f"[load idx5] Down sensor raw={dv} (active={'0' if ACTIVE_LOW_IN else '1'})")
+            if self.in_active(self.gpioIn_PusherDown):
                 self.isExecProcess_load = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
                 self.replyMessage('S' + self.rxMessage[1:5] + '000')
 
         self.cntTimeOutExecProcess += 1
-        if self.cntTimeOutExecProcess >= 30:
+        if self.cntTimeOutExecProcess >= 30:                  # 3초 타임아웃
             errorCode = self.checkErrorCode()
-
             self.isExecProcess_load = False
             self.pusherStatus = PusherStatus.ERROR
             self.pusherError = PusherError.LOAD_UNLOAD
@@ -289,30 +319,40 @@ class MainPusher:
 
     def execProcess_Unload(self):
         # unload (Pusher Back)
-        if self.idxExecProcess_load == 0:                     # Pusher 상승
-            self.gpioOut_pusherUp(True)
-            self.gpioOut_pusherDown(False)
-            self.idxExecProcess_load += 1
-        elif self.idxExecProcess_load == 1:                   # Pusher 상승 확인
+        if self.idxExecProcess_Unload == 0:                   # Pusher 상승
+            self.set_out(self.gpioOut_pusherUp, True)
+            self.set_out(self.gpioOut_pusherDown, False)
+            print(f"[unload idx0] OUT Up=ON, Down=OFF (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+            self.idxExecProcess_Unload += 1
+
+        elif self.idxExecProcess_Unload == 1:                 # Pusher 상승 확인
             self.pusherError = PusherError.PUSHER_UP
-            if not self.gpioIn_PusherUp:
+            uv = self.gpioIn_PusherUp.value()
+            print(f"[unload idx1] Up sensor raw={uv} (active={'0' if ACTIVE_LOW_IN else '1'})")
+            if self.in_active(self.gpioIn_PusherUp):
                 self.cntTimeOutExecProcess = 0
                 self.cntExecProcess = 0
-                self.idxExecProcess_load += 1
-        elif self.idxExecProcess_load == 2:                   # 대기 500msec
+                self.idxExecProcess_Unload += 1
+
+        elif self.idxExecProcess_Unload == 2:                 # 대기 500msec
             self.cntExecProcess += 1
             if self.cntExecProcess >= 5:
                 self.cntTimeOutExecProcess = 0
-                self.idxExecProcess_load += 1
-        elif self.idxExecProcess_load == 3:                   # Pusher 후진
-            self.gpioOut_pusherFront(False)
-            self.gpioOut_pusherBack(True)
+                self.idxExecProcess_Unload += 1
+
+        elif self.idxExecProcess_Unload == 3:                 # Pusher 후진
+            self.set_out(self.gpioOut_pusherFront, False)
+            self.set_out(self.gpioOut_pusherBack, True)
+            print(f"[unload idx3] OUT Front=OFF, Back=ON (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
             self.cntExecProcess = 0
-            self.idxExecProcess_load += 1
-        elif self.idxExecProcess_load == 4:                   # Pusher 후진 확인
+            self.idxExecProcess_Unload += 1
+
+        elif self.idxExecProcess_Unload == 4:                 # Pusher 후진 확인
             self.pusherError = PusherError.PUSHER_BACK
-            if not self.gpioIn_PusherBack:
-                self.idxExecProcess_load = False
+            bv = self.gpioIn_PusherBack.value()
+            print(f"[unload idx4] Back sensor raw={bv} (active={'0' if ACTIVE_LOW_IN else '1'})")
+            if self.in_active(self.gpioIn_PusherBack):
+                self.isExecProcess_Unload = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
                 self.replyMessage('S' + self.rxMessage[1:5] + '000')
@@ -320,13 +360,10 @@ class MainPusher:
         self.cntTimeOutExecProcess += 1
         if self.cntTimeOutExecProcess >= 30:
             errorCode = self.checkErrorCode()
-
             self.isExecProcess_Unload = False
             self.pusherStatus = PusherStatus.ERROR
             self.pusherError = PusherError.LOAD_UNLOAD
             self.replyMessage('Error' + errorCode)
-
-
 
     def replyMessage(self, message):
         if self.rxMessage == 'Check_status':
@@ -336,7 +373,6 @@ class MainPusher:
 
     def checkErrorCode(self):
         errorCode = '001'
-
         if self.pusherError == PusherError.PUSHER_FRONT:
             errorCode = '010'
         elif self.pusherError == PusherError.PUSHER_BACK:
@@ -355,69 +391,60 @@ class MainPusher:
         pass
 
 
-
-
-# 안정적 재접속을 위해 Main loop를 수정함(7/7).
-# Write card 함수는 변경하지 않았으므로 문제가 있으면 원복할 것.
-
 if __name__ == "__main__":
-    cnt_msec = 0
+        cnt_msec = 0
 
-    ipAddress = '192.168.1.105'
-    portNumber = 8005
-    gateway = '192.168.1.1'
-    server_ip = '192.168.1.2'
-    server_port = 8000
+        ipAddress = '192.168.1.105'
+        portNumber = 8005
+        gateway = '192.168.1.1'
+        server_ip = '192.168.1.2'
+        server_port = 8000
 
-    main = MainPusher(server_ip=server_ip, server_port=server_port)
+        main = MainPusher(server_ip=server_ip, server_port=server_port)
 
-    # 상태머신 구조
-    # 상태 : "DISCONNECTED", "CONNECTED"
-    conn_state = "CONNECTED" if TCPClient.is_initialized else "DISCONNECTED"
-    reconnect_timer = 0
+        conn_state = "CONNECTED" if TCPClient.is_initialized else "DISCONNECTED"
+        reconnect_timer = 0
 
-    while True:
-        try:
-            cnt_msec += 1
+        while True:
+            try:
+                cnt_msec += 1
 
-            # 항상 TCPClient 상태 확인, 끊어진 경우 즉시 재접속 시도
-            if not TCPClient.is_initialized:
-                conn_state = "DISCONNECTED"
-                if reconnect_timer <= 0:
-                    print("[*] Trying to reconnect to server...")
-                    main.try_init_tcp()
-                    if TCPClient.is_initialized:
-                        print("[*] Reconnected to server")
-                        conn_state = 'CONNECTED'
-                        reconnect_timer = 0
+                if not TCPClient.is_initialized:
+                    conn_state = "DISCONNECTED"
+                    if reconnect_timer <= 0:
+                        print("[*] Trying to reconnect to server...")
+                        main.try_init_tcp()
+                        if TCPClient.is_initialized:
+                            print("[*] Reconnected to server")
+                            conn_state = 'CONNECTED'
+                            reconnect_timer = 0
+                        else:
+                            print("[*] Reconnect failed")
+                            reconnect_timer = 100
                     else:
-                        print("[*] Reconnect failed")
-                        reconnect_timer = 100
+                        reconnect_timer -= 1
                 else:
-                    reconnect_timer -= 1
-            else:
-                conn_state = 'CONNECTED'
+                    conn_state = 'CONNECTED'
 
-            if not cnt_msec % 10:
-                if TCPClient.is_initialized :
-                    main.func_10msec()
+                if not cnt_msec % 10:
+                    if TCPClient.is_initialized:
+                        main.func_10msec()
 
-            if not cnt_msec % 25:
-                main.func_25msec()
+                if not cnt_msec % 25:
+                    main.func_25msec()
 
-            if not cnt_msec % 100:
-                main.func_100msec()
+                if not cnt_msec % 100:
+                    main.func_100msec()
 
-            if not cnt_msec % 500:
-                main.func_500msec()
+                if not cnt_msec % 500:
+                    main.func_500msec()
 
-            time.sleep_ms(1)
-        except KeyboardInterrupt:
-            print("KeyboardInterrupt: cleaning up TCP...")
-            TCPClient.close_connection()
-            break
-        except Exception as e:
-            print("Exception in main loop", e)
-            import sys
-            sys.print_exception(e)
-            # sys.exit()
+                time.sleep_ms(1)
+            except KeyboardInterrupt:
+                print("KeyboardInterrupt: cleaning up TCP...")
+                TCPClient.close_connection()
+                break
+            except Exception as e:
+                print("Exception in main loop", e)
+                import sys
+                sys.print_exception(e)
