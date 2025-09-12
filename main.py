@@ -78,6 +78,13 @@ class MainPusher:
         self.isExecProcess_initPusherPos = False
         self.idxExecProcess_initPusherPos = 0
 
+        # ADD: 중단/복귀 상태머신용 플래그/카운터
+        self.isExecProcess_returnToInit = False
+        self.idxExecProcess_returnToInit = 0
+        self.cntReturn = 0
+        self.cntReturnTimeout = 0
+        self.abort_reason = None
+
         self.isInitedPusher = None
         self.try_init_tcp()
         self.init_gpioOut()
@@ -137,12 +144,36 @@ class MainPusher:
             self.mapping_start_sent = False
 
     def func_10msec(self):
+        # ADD: 현지 비상정지 버튼(E-STOP) 감지 → 즉시 복귀 요청
+        if self.in_active(self.gpioIn_STOP):
+            if not self.isExecProcess_returnToInit:
+                self.request_return_to_init('E-STOP')
+                # 서버 통지(선택)
+                TCPClient.sendMessage('EmergencyStop\n')
+            # 비상 시에는 수신 명령 무시해도 됨(선택)
+            # return
+
         self.check_and_send_mapping_start()
 
         message = TCPClient.read_from_socket()
         if message is not None:
             self.rxMessage = message.decode('utf-8').strip()
             print("[RX]", self.rxMessage, "status:", self.pusherStatus)
+
+            # 2) 서버 복귀 명령: STOP 상태와 무관하게 즉시 복귀 상태머신으로 전환
+            if self.rxMessage in ('go_init', 'ReturnInit'):
+                if not self.isExecProcess_returnToInit:
+                    self.request_return_to_init(f'server:{self.rxMessage}')
+                    # 선택: 즉시 수신 확인 응답
+                    TCPClient.sendMessage('ReturnInit Requested\n')
+                else:
+                    print('[go_init] already returning to init; ignoring duplicate')
+                return  # 복귀 우선 처리
+
+            # 3) 복귀 중이면 다른 명령 무시(권장)
+            if self.isExecProcess_returnToInit:
+                print('[func_10msec] return-to-init in progress; ignoring command:', self.rxMessage)
+                return
 
             if self.rxMessage == 'initial_pusher':
                 self.cntTimeOutExecProcess = 0
@@ -194,6 +225,8 @@ class MainPusher:
                 self.isExecProcess_Unload = True
                 print(f"[FORCE BACK] Front={self.gpioOut_pusherFront.value()} Back={self.gpioOut_pusherBack.value()} (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
 
+
+
             elif self.rxMessage.startswith('OUT '):
                 # 수동 출력 테스트: 예) OUT front on / OUT back off / OUT up on / OUT down off
                 try:
@@ -219,11 +252,17 @@ class MainPusher:
             self.execProcess_setPusherPos()
 
     def func_100msec(self):
+        # 복귀 상태머신을 최우선 실행
+        if self.isExecProcess_returnToInit:
+            self.execProcess_returnToInit()
+            return
+
         # 상태머신 디버그
         # try:
         #     print(f"[100ms] flags load={self.isExecProcess_load}, unload={self.isExecProcess_Unload}, manual={self.isExecProcess_manualHandle} | idx_load={self.idxExecProcess_load}, idx_unload={self.idxExecProcess_Unload}, status={self.pusherStatus}")
         # except Exception as e:
         #     print("[100ms] debug print error:", e)
+
         if self.isExecProcess_load:
             self.execProcess_load()
         elif self.isExecProcess_Unload:
@@ -421,6 +460,93 @@ class MainPusher:
 
     def execProcess_manualHandle(self):
         pass
+
+    # --- ADD: 공통 중단용 헬퍼들 ---
+    def clear_all_processes(self):
+        # 현재 진행 중인 모든 상태머신 즉시 해제
+        self.isExecProcess_load = False
+        self.isExecProcess_Unload = False
+        self.isExecProcess_manualHandle = False
+        self.isExecProcess_initPusherPos = False
+
+        # 인덱스/카운터 초기화
+        self.idxExecProcess_load = 0
+        self.idxExecProcess_Unload = 0
+        self.idxExecProcess_unit0p = 0
+        self.idxExecProcess_initPusherPos = 0
+        self.cntExecProcess = 0
+        self.cntTimeOutExecProcess = 0
+
+    def request_return_to_init(self, reason: str):
+        # 어떤 상태에서든 즉시 복귀 상태머신으로 전환
+        print(f"[RETURN_INIT] requested: {reason}")
+        self.clear_all_processes()
+        self.isExecProcess_returnToInit = True
+        self.idxExecProcess_returnToInit = 0
+        self.cntReturn = 0
+        self.cntReturnTimeout = 0
+        self.abort_reason = reason
+        self.pusherStatus = PusherStatus.DOING
+        self.pusherError = PusherError.NONE
+        # 즉시 일부 안전 출력 세팅(충돌 최소화: Down/Front 해제)
+        # 실제 구동은 상태머신에서 단계적으로 수행
+        self.set_out(self.gpioOut_pusherDown, False)
+        self.set_out(self.gpioOut_pusherFront, False)
+
+    def execProcess_returnToInit(self):
+        """
+        비상/복귀 전용 상태머신
+        목표: Up=ON, Down=OFF, Back=ON, Front=OFF로 만들고, Up/Back 센서 확인 후 READY
+        타임아웃: 단계별 5초 (100ms tick 기준 50카운트)
+        """
+        TIMEOUT_TICKS = 50  # 5초 (func_100msec 기준)
+
+        if self.idxExecProcess_returnToInit == 0:
+            # 1) Up 방향 구동 (Down OFF는 request에서 이미 수행)
+            self.set_out(self.gpioOut_pusherUp, True)
+            # Front는 이미 OFF. Back은 나중에 ON 시킴(앞축 해제 후 후진)
+            print(f"[returnToInit idx0] Up=ON, Down=OFF, Front=OFF (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+            self.cntReturnTimeout = 0
+            self.idxExecProcess_returnToInit = 1
+
+        elif self.idxExecProcess_returnToInit == 1:
+            # 2) Up 센서 확인
+            self.pusherError = PusherError.PUSHER_UP
+            if self.in_active(self.gpioIn_PusherUp):
+                self.cntReturnTimeout = 0
+                self.idxExecProcess_returnToInit = 2
+                print("[returnToInit idx1] Up sensor active")
+            else:
+                self.cntReturnTimeout += 1
+
+        elif self.idxExecProcess_returnToInit == 2:
+            # 3) Back 구동 (Front는 이미 OFF 유지)
+            self.set_out(self.gpioOut_pusherBack, True)
+            self.set_out(self.gpioOut_pusherFront, False)
+            print(f"[returnToInit idx2] Back=ON, Front=OFF (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+            self.cntReturnTimeout = 0
+            self.idxExecProcess_returnToInit = 3
+
+        elif self.idxExecProcess_returnToInit == 3:
+            # 4) Back 센서 확인
+            self.pusherError = PusherError.PUSHER_BACK
+            if self.in_active(self.gpioIn_PusherBack):
+                self.isExecProcess_returnToInit = False
+                self.pusherStatus = PusherStatus.READY
+                self.pusherError = PusherError.NONE
+                print("[returnToInit idx3] Back sensor active -> READY")
+                TCPClient.sendMessage('ReturnInit OK\n')
+            else:
+                self.cntReturnTimeout += 1
+
+        # 공통 타임아웃 처리
+        if self.isExecProcess_returnToInit and self.cntReturnTimeout >= TIMEOUT_TICKS:
+            errorCode = self.checkErrorCode()
+            self.isExecProcess_returnToInit = False
+            self.pusherStatus = PusherStatus.ERROR
+            print(f"[returnToInit] TIMEOUT -> ERROR {errorCode}, reason={self.abort_reason}")
+            TCPClient.sendMessage('ReturnInit Error' + errorCode + '\n')
+
 
 
 if __name__ == "__main__":
