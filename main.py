@@ -34,7 +34,6 @@ class MainPusher:
         self.sysLed_pico = Pin(25, Pin.OUT)
 
         #region Init GPIO_OUT
-        # 주의: 아래 GPIO 번호는 Pico의 GP 번호입니다. 보드 물리 핀 번호와 다릅니다.
         self.gpioOut_pusherDown = Pin(10, Pin.OUT)  # GP10
         self.gpioOut_pusherUp = Pin(11, Pin.OUT)    # GP11
         self.gpioOut_pusherBack = Pin(14, Pin.OUT)  # GP14
@@ -42,14 +41,19 @@ class MainPusher:
         #end region
 
         #region Init GPIO_IN (풀업: 일반적으로 Active-Low)
-        self.gpioIn_PusherDown = Pin(0, Pin.IN, Pin.PULL_UP)    # GP0
-        self.gpioIn_PusherUp = Pin(1, Pin.IN, Pin.PULL_UP)      # GP1
-        self.gpioIn_PusherBack = Pin(2, Pin.IN, Pin.PULL_UP)    # GP2
-        self.gpioIn_PusherFront = Pin(3, Pin.IN, Pin.PULL_UP)   # GP3
+        self.gpioIn0 = Pin(0, Pin.IN, Pin.PULL_UP)    # GP0
+        self.gpioIn1 = Pin(1, Pin.IN, Pin.PULL_UP)      # GP1
+        self.gpioIn2 = Pin(2, Pin.IN, Pin.PULL_UP)    # GP2
+        self.gpioIn3 = Pin(3, Pin.IN, Pin.PULL_UP)   # GP3
         self.gpioIn_STOP = Pin(4, Pin.IN, Pin.PULL_UP)          # GP4
         self.gpioIn_Start_R = Pin(5, Pin.IN, Pin.PULL_UP)       # GP5
         self.gpioIn_Start_L = Pin(6, Pin.IN, Pin.PULL_UP)       # GP6
         #end region
+
+        self.gpioIn_Pusherdown = None
+        self.gpioIn_PusherUp = None
+        self.gpioIn_PusherBack = None
+        self.gpioIn_PusherFront = None
 
         print("Start_R:", self.gpioIn_Start_R.value(), "Start_L", self.gpioIn_Start_L.value())
 
@@ -69,8 +73,8 @@ class MainPusher:
         self.cntExecProcess = 0
         self.cntTimeOutExecProcess = 0
 
-        self.isExecProcess_manualHandle = False
         self.idxExecProcess_unit0p = 0
+        self.isExecProcess_unit0p = False
 
         self.pusherStatus = PusherStatus.UNKNOWN
         self.pusherError = PusherError.NONE
@@ -96,6 +100,12 @@ class MainPusher:
         self.set_out(self.gpioOut_pusherUp, True)
         self.set_out(self.gpioOut_pusherDown, False)
         print(f"[init_gpioOut] Front={self.gpioOut_pusherFront.value()} Back={self.gpioOut_pusherBack.value()} Up={self.gpioOut_pusherUp.value()} Down={self.gpioOut_pusherDown.value()} (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+
+    def get_gpioIn(self):
+        self.gpioIn_Pusherdown = not self.gpioIn0.value()
+        self.gpioIn_PusherUp = not self.gpioIn1.value()
+        self.gpioIn_PusherBack = not self.gpioIn2.value()
+        self.gpioIn_PusherFront = not self.gpioIn3.value()
 
     # 출력/입력 헬퍼
     def set_out(self, pin: Pin, on: bool):
@@ -144,6 +154,8 @@ class MainPusher:
             self.mapping_start_sent = False
 
     def func_10msec(self):
+        self.get_gpioIn()
+
         # ADD: 현지 비상정지 버튼(E-STOP) 감지 → 즉시 복귀 요청
         if self.in_active(self.gpioIn_STOP):
             if not self.isExecProcess_returnToInit:
@@ -189,17 +201,17 @@ class MainPusher:
                 else:
                     self.replyMessage('Reset failed')
 
-            elif self.rxMessage == 'Start':
-                if self.pusherStatus == PusherStatus.READY:
-                    self.idxExecProcess_load = 0
-                    self.isExecProcess_load = True
-                    print("[Start] load started")
-                else:
-                    self.idxExecProcess_unit0p = 0
-                    self.isExecProcess_manualHandle = True
-                    print("[Start] manual handle started (not READY)")
-                self.cntTimeOutExecProcess = 0
-                self.pusherStatus = PusherStatus.DOING
+            # elif self.rxMessage == 'Start':
+            #     if self.pusherStatus == PusherStatus.READY:
+            #         self.idxExecProcess_load = 0
+            #         self.isExecProcess_load = True
+            #         print("[Start] load started")
+            #     else:
+            #         self.idxExecProcess_unit0p = 0
+            #         self.isExecProcess_manualHandle = True
+            #         print("[Start] manual handle started (not READY)")
+            #     self.cntTimeOutExecProcess = 0
+            #     self.pusherStatus = PusherStatus.DOING
 
             elif self.rxMessage == 'Finish':
                 if self.pusherStatus == PusherStatus.READY:
@@ -225,7 +237,10 @@ class MainPusher:
                 self.isExecProcess_Unload = True
                 print(f"[FORCE BACK] Front={self.gpioOut_pusherFront.value()} Back={self.gpioOut_pusherBack.value()} (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
 
-
+            elif self.rxMessage.startswith('Manual'):
+                if self.isExecProcess_load == False:
+                    self.idxExecProcess_unit0p = 0
+                    self.isExecProcess_unit0p = True
 
             elif self.rxMessage.startswith('OUT '):
                 # 수동 출력 테스트: 예) OUT front on / OUT back off / OUT up on / OUT down off
@@ -250,12 +265,18 @@ class MainPusher:
     def func_25msec(self):
         if self.isExecProcess_initPusherPos:
             self.execProcess_setPusherPos()
+        if not TCPClient.is_initialized:
+            return
+        if self.isExecProcess_initPusherPos:
+            self.execProcess_setPusherPos()
 
     def func_100msec(self):
         # 복귀 상태머신을 최우선 실행
         if self.isExecProcess_returnToInit:
             self.execProcess_returnToInit()
             return
+        elif self.isExecProcess_unit0p:
+            self.execProcess_unit0p()
 
         # 상태머신 디버그
         # try:
@@ -267,27 +288,50 @@ class MainPusher:
             self.execProcess_load()
         elif self.isExecProcess_Unload:
             self.execProcess_Unload()
-        elif self.isExecProcess_manualHandle:
-            self.execProcess_manualHandle()
+
 
     def func_500msec(self):
-        # 입출력 상태 주기 출력(진단용)
-        inputs = {
-            "Down": self.gpioIn_PusherDown.value(),
-            "Up": self.gpioIn_PusherUp.value(),
-            "Back": self.gpioIn_PusherBack.value(),
-            "Front": self.gpioIn_PusherFront.value(),
-            "STOP": self.gpioIn_STOP.value(),
-            "Start_R": self.gpioIn_Start_R.value(),
-            "Start_L": self.gpioIn_Start_L.value(),
-        }
-        outputs = {
-            "OutFront": self.gpioOut_pusherFront.value(),
-            "OutBack": self.gpioOut_pusherBack.value(),
-            "OutUp": self.gpioOut_pusherUp.value(),
-            "OutDown": self.gpioOut_pusherDown.value(),
-        }
-        print("[IO] IN", inputs, "| OUT", outputs, f"(ACTIVE_LOW_IN={ACTIVE_LOW_IN}, ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+        pass
+
+        # # 입출력 상태 주기 출력(진단용)
+        # inputs = {
+        #     "Down": self.gpioIn_PusherDown.value(),
+        #     "Up": self.gpioIn_PusherUp.value(),
+        #     "Back": self.gpioIn_PusherBack.value(),
+        #     "Front": self.gpioIn_PusherFront.value(),
+        #     "STOP": self.gpioIn_STOP.value(),
+        #     "Start_R": self.gpioIn_Start_R.value(),
+        #     "Start_L": self.gpioIn_Start_L.value(),
+        # }
+        # outputs = {
+        #     "OutFront": self.gpioOut_pusherFront.value(),
+        #     "OutBack": self.gpioOut_pusherBack.value(),
+        #     "OutUp": self.gpioOut_pusherUp.value(),
+        #     "OutDown": self.gpioOut_pusherDown.value(),
+        # }
+        # print("[IO] IN", inputs, "| OUT", outputs, f"(ACTIVE_LOW_IN={ACTIVE_LOW_IN}, ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+
+    def execProcess_unit0p(self):
+        if self.idxExecProcess_unit0p == 0:
+            # Pusher Front
+            if self.rxMessage == 'ManualPusherFront':
+                if not self.gpioIn_Pusherdown:
+                    self.set_out(self.gpioOut_pusherBack, False)
+                    self.set_out(self.gpioOut_pusherFront, True)
+            elif self.rxMessage == 'ManualPusherBack':
+                if not self.gpioIn_Pusherdown:
+                    self.set_out(self.gpioOut_pusherFront, False)
+                    self.set_out(self.gpioOut_pusherBack, True)
+            elif self.rxMessage == 'ManualPusherDown':
+                self.set_out(self.gpioOut_pusherUp, False)
+                self.set_out(self.gpioOut_pusherDown, True)
+            elif self.rxMessage == 'ManualPusherUp':
+                self.set_out(self.gpioOut_pusherDown, False)
+                self.set_out(self.gpioOut_pusherUp, True)
+            elif self.rxMessage == 'ManualPusherInitial':
+                self.isExecProcess_returnToInit = True
+
+
 
     def execProcess_setPusherPos(self):
         # 초기 위치 설정
@@ -316,7 +360,6 @@ class MainPusher:
                 self.pusherStatus = PusherStatus.READY
                 self.isInitedPusher = True
                 self.isExecProcess_initPusherPos = False
-                self.replyMessage('S' + self.rxMessage[1:5] + '000')
 
         self.cntTimeOutExecProcess += 1
         if self.cntTimeOutExecProcess >= 400:                               # 8초 타임아웃
@@ -325,10 +368,8 @@ class MainPusher:
             self.pusherStatus = PusherStatus.ERROR
             self.pusherError = PusherError.INIT_PUSHER_POS
             self.isInitedPusher = False
-            self.replyMessage('S' + self.rxMessage[1:5] + errorCode)
 
     def execProcess_load(self):
-        print('execProcess_load started')
 
         if self.idxExecProcess_load == 0:                     # 초기상태 확인 (Up, Back 감지되어야)
             if self.in_active(self.gpioIn_PusherUp) and self.in_active(self.gpioIn_PusherBack):
@@ -378,7 +419,6 @@ class MainPusher:
                 self.isExecProcess_load = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
-                self.replyMessage('S' + self.rxMessage[1:5] + '000')
 
         self.cntTimeOutExecProcess += 1
         if self.cntTimeOutExecProcess >= 30:                  # 3초 타임아웃
@@ -423,10 +463,10 @@ class MainPusher:
             bv = self.gpioIn_PusherBack.value()
             print(f"[unload idx4] Back sensor raw={bv} (active={'0' if ACTIVE_LOW_IN else '1'})")
             if self.in_active(self.gpioIn_PusherBack):
+                self.replyMessage('Pusher back finished')
                 self.isExecProcess_Unload = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
-                self.replyMessage('S' + self.rxMessage[1:5] + '000')
 
         self.cntTimeOutExecProcess += 1
         if self.cntTimeOutExecProcess >= 30:
@@ -436,11 +476,21 @@ class MainPusher:
             self.pusherError = PusherError.LOAD_UNLOAD
             self.replyMessage('Error' + errorCode)
 
+    # 송신 표준 헬퍼: 모든 송신은 이 함수로 통일
+    def send_line(self, message: str):
+        if message is None:
+            return
+        # 메시지 경계 보장을 위해 개행 추가(중복 방지)
+        if not message.endswith('\n'):
+            message = message + '\n'
+        TCPClient.sendMessage(message)
+
     def replyMessage(self, message):
+        # Check_status는 원래 의도대로 무시
         if self.rxMessage == 'Check_status':
-            pass
-        else:
-            TCPClient.sendMessage(message)
+            return
+        # 개행 보장하여 송신
+        self.send_line(message)
 
     def checkErrorCode(self):
         errorCode = '001'
@@ -458,15 +508,13 @@ class MainPusher:
             errorCode = '015'
         return errorCode
 
-    def execProcess_manualHandle(self):
-        pass
 
     # --- ADD: 공통 중단용 헬퍼들 ---
     def clear_all_processes(self):
         # 현재 진행 중인 모든 상태머신 즉시 해제
         self.isExecProcess_load = False
         self.isExecProcess_Unload = False
-        self.isExecProcess_manualHandle = False
+        self.isExecProcess_unit0p = False
         self.isExecProcess_initPusherPos = False
 
         # 인덱스/카운터 초기화
@@ -547,6 +595,41 @@ class MainPusher:
             print(f"[returnToInit] TIMEOUT -> ERROR {errorCode}, reason={self.abort_reason}")
             TCPClient.sendMessage('ReturnInit Error' + errorCode + '\n')
 
+    # ADD: 연결 끊김 시 런타임 상태 리셋용 메서드
+    def reset_runtime_state(self):
+        print("[reset_runtime_state] Disconnected: clearing in-progress states and counters")
+        # 진행 중 플래그 해제
+        self.isExecProcess_load = False
+        self.isExecProcess_Unload = False
+        self.isExecProcess_unit0p = False
+        self.isExecProcess_initPusherPos = False
+        # (있다면) 복귀 상태머신도 해제
+        if hasattr(self, 'isExecProcess_returnToInit'):
+            self.isExecProcess_returnToInit = False
+            if hasattr(self, 'idxExecProcess_returnToInit'):
+                self.idxExecProcess_returnToInit = 0
+
+        # 인덱스/카운터 초기화
+        self.idxExecProcess_load = 0
+        self.idxExecProcess_Unload = 0
+        self.idxExecProcess_unit0p = 0
+        self.idxExecProcess_initPusherPos = 0
+        self.cntExecProcess = 0
+        self.cntTimeOutExecProcess = 0
+
+        # 입력 관련 상태 초기화
+        self.start_btn_hold_start_time = None
+        self.mapping_start_sent = False
+        self.rxMessage = ''
+
+        # 주의: 물리 출력은 즉시 바꾸지 않습니다.
+        # 필요 시 안전 상태로 출력 변경하려면 아래 주석을 해제하세요.
+        # self.init_gpioOut()
+        #
+        # 상태값은 애매할 수 있으므로 UNKNOWN으로 두는 것을 권장합니다.
+        # (원한다면 READY로 바꿀 수 있으나, 센서 확인 없이 READY는 위험할 수 있음)
+        self.pusherStatus = PusherStatus.UNKNOWN
+        self.pusherError = PusherError.NONE
 
 
 if __name__ == "__main__":
