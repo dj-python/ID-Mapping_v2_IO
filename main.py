@@ -50,7 +50,7 @@ class MainPusher:
         self.gpioIn_Start_L = Pin(6, Pin.IN, Pin.PULL_UP)       # GP6
         #end region
 
-        self.gpioIn_Pusherdown = None
+        self.gpioIn_PusherDown = None
         self.gpioIn_PusherUp = None
         self.gpioIn_PusherBack = None
         self.gpioIn_PusherFront = None
@@ -109,7 +109,7 @@ class MainPusher:
         self.gpioIn_PusherFront = self.in_active(self.gpioIn3)
 
     # def get_gpioIn(self):
-    #     self.gpioIn_Pusherdown = not self.gpioIn0.value()
+    #     self.gpioIn_PusherDown = not self.gpioIn0.value()
     #     self.gpioIn_PusherUp = not self.gpioIn1.value()
     #     self.gpioIn_PusherBack = not self.gpioIn2.value()
     #     self.gpioIn_PusherFront = not self.gpioIn3.value()
@@ -174,27 +174,67 @@ class MainPusher:
         except Exception as e:
             print(f"[-] Initialization Error: {str(e)}")
 
-    def check_and_send_mapping_start(self):
-        left = self.gpioIn_Start_L.value()
-        right = self.gpioIn_Start_R.value()
 
-        if left == 0 and right == 0:
-            if self.start_btn_hold_start_time is None:
-                self.start_btn_hold_start_time = time.ticks_ms()
-                print("Both buttons pressed, timer started")
-            elif not self.mapping_start_sent:
-                held_ms = time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)
-                print(f"Buttons held for {held_ms} ms")
-                if held_ms >= self.MAPPING_START_HOLD_MS:
-                    print("Sending message: Mapping start")
-                    TCPClient.sendMessage('Mapping start\n')
-                    print('[Mapping start] sent to server by Start_R + Start_L')
-                    self.mapping_start_sent = True
-        else:
-            if self.start_btn_hold_start_time is not None:
-                print(f"Buttons released after holding {time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)} ms")
-            self.start_btn_hold_start_time = None
+
+    def check_and_send_mapping_start(self):
+        # Read current raw levels
+        left_val = self.gpioIn_Start_L.value()
+        right_val = self.gpioIn_Start_R.value()
+
+        # Determine pressed state considering Active-Low inputs
+        def is_pressed(v):
+            return v == 0 if ACTIVE_LOW_IN else v == 1
+
+        left_pressed = is_pressed(left_val)
+        right_pressed = is_pressed(right_val)
+        both_pressed = left_pressed and right_pressed
+
+        # Lazy init of edge tracking vars
+        if not hasattr(self, 'both_pressed_prev'):
+            self.both_pressed_prev = both_pressed
+        if not hasattr(self, 'mapping_start_sent'):
             self.mapping_start_sent = False
+
+        # Rising edge: both become pressed now (from not-both-pressed)
+        if both_pressed and not self.both_pressed_prev:
+            TCPClient.sendMessage('Mapping start\n')
+            print('[Mapping start] sent to server (Start_R + Start_L pressed simultaneously)')
+            self.mapping_start_sent = True
+
+        # Falling edge: leaving both-pressed state → at least one button released
+        if (not both_pressed) and self.both_pressed_prev:
+            if self.mapping_start_sent:
+                TCPClient.sendMessage('Button unpushed\n')
+                print('[Button unpushed] sent to server (one or both buttons released)')
+            # Reset for next cycle
+            self.mapping_start_sent = False
+
+        # Update previous state
+        self.both_pressed_prev = both_pressed
+
+    #
+    #
+    # def check_and_send_mapping_start(self):
+    #     left = self.gpioIn_Start_L.value()
+    #     right = self.gpioIn_Start_R.value()
+    #
+    #     if left == 0 and right == 0:
+    #         if self.start_btn_hold_start_time is None:
+    #             self.start_btn_hold_start_time = time.ticks_ms()
+    #             print("Both buttons pressed, timer started")
+    #         elif not self.mapping_start_sent:
+    #             held_ms = time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)
+    #             print(f"Buttons held for {held_ms} ms")
+    #             if held_ms >= self.MAPPING_START_HOLD_MS:
+    #                 print("Sending message: Mapping start")
+    #                 TCPClient.sendMessage('Mapping start\n')
+    #                 print('[Mapping start] sent to server by Start_R + Start_L')
+    #                 self.mapping_start_sent = True
+    #     else:
+    #         if self.start_btn_hold_start_time is not None:
+    #             print(f"Buttons released after holding {time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)} ms")
+    #         self.start_btn_hold_start_time = None
+    #         self.mapping_start_sent = False
 
     def func_10msec(self):
         self.get_gpioIn()
@@ -282,6 +322,7 @@ class MainPusher:
 
             elif self.rxMessage.startswith('Manual'):
                 if self.isExecProcess_load == False:
+                    self.pusherStatus=PusherStatus.DOING
                     self.idxExecProcess_unit0p = 0
                     self.isExecProcess_unit0p = True
 
@@ -436,7 +477,6 @@ class MainPusher:
             print(f"[load idx1] OUT raw levels Front={self.gpioOut_pusherFront.value()}, Back={self.gpioOut_pusherBack.value()}")
             self.idxExecProcess_load += 1
 
-
         elif self.idxExecProcess_load == 2:
             self.pusherError = PusherError.PUSHER_FRONT
             fv = self.raw_in_level(self.gpioIn_PusherFront)
@@ -445,15 +485,6 @@ class MainPusher:
                 self.cntTimeOutExecProcess = 0
                 self.cntExecProcess = 0
                 self.idxExecProcess_load += 1
-
-        # elif self.idxExecProcess_load == 2:                   # Pusher 전진 확인
-        #     self.pusherError = PusherError.PUSHER_FRONT
-        #     fv = self.gpioIn_PusherFront.value()
-        #     print(f"[load idx2] Front sensor raw={fv} (active={'0' if ACTIVE_LOW_IN else '1'})")
-        #     if self.in_active(self.gpioIn_PusherFront):
-        #         self.cntTimeOutExecProcess = 0
-        #         self.cntExecProcess = 0
-        #         self.idxExecProcess_load += 1
 
         elif self.idxExecProcess_load == 3:                   # delay 500ms (100ms * 5)
             self.cntExecProcess += 1
@@ -468,25 +499,15 @@ class MainPusher:
             self.cntExecProcess = 0
             self.idxExecProcess_load += 1
 
-
         elif self.idxExecProcess_load == 5:
             self.pusherError = PusherError.PUSHER_DOWN
             dv = self.raw_in_level(self.gpioIn_PusherDown)
             print(f"[load idx5] Down sensor raw={dv} (active={'0' if ACTIVE_LOW_IN else '1'})")
+            TCPClient.sendMessage('Pusher down finished\n')
             if self.in_active(self.gpioIn_PusherDown):
                 self.isExecProcess_load = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
-
-
-        # elif self.idxExecProcess_load == 5:                   # Pusher 하강 확인
-        #     self.pusherError = PusherError.PUSHER_DOWN
-        #     dv = self.gpioIn_PusherDown.value()
-        #     print(f"[load idx5] Down sensor raw={dv} (active={'0' if ACTIVE_LOW_IN else '1'})")
-        #     if self.in_active(self.gpioIn_PusherDown):
-        #         self.isExecProcess_load = False
-        #         self.pusherStatus = PusherStatus.READY
-        #         self.pusherError = PusherError.NONE
 
         self.cntTimeOutExecProcess += 1
         if self.cntTimeOutExecProcess >= 30:                  # 3초 타임아웃
@@ -513,16 +534,6 @@ class MainPusher:
                 self.cntExecProcess = 0
                 self.idxExecProcess_Unload += 1
 
-
-        # elif self.idxExecProcess_Unload == 1:                 # Pusher 상승 확인
-        #     self.pusherError = PusherError.PUSHER_UP
-        #     uv = self.gpioIn_PusherUp.value()
-        #     print(f"[unload idx1] Up sensor raw={uv} (active={'0' if ACTIVE_LOW_IN else '1'})")
-        #     if self.in_active(self.gpioIn_PusherUp):
-        #         self.cntTimeOutExecProcess = 0
-        #         self.cntExecProcess = 0
-        #         self.idxExecProcess_Unload += 1
-
         elif self.idxExecProcess_Unload == 2:                 # 대기 500msec
             self.cntExecProcess += 1
             if self.cntExecProcess >= 5:
@@ -536,7 +547,6 @@ class MainPusher:
             self.cntExecProcess = 0
             self.idxExecProcess_Unload += 1
 
-
         elif self.idxExecProcess_Unload == 4:
             self.pusherError = PusherError.PUSHER_BACK
             bv = self.raw_in_level(self.gpioIn_PusherBack)
@@ -546,17 +556,6 @@ class MainPusher:
                 self.isExecProcess_Unload = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
-
-
-        # elif self.idxExecProcess_Unload == 4:                 # Pusher 후진 확인
-        #     self.pusherError = PusherError.PUSHER_BACK
-        #     bv = self.gpioIn_PusherBack.value()
-        #     print(f"[unload idx4] Back sensor raw={bv} (active={'0' if ACTIVE_LOW_IN else '1'})")
-        #     if self.in_active(self.gpioIn_PusherBack):
-        #         self.replyMessage('Pusher back finished')
-        #         self.isExecProcess_Unload = False
-        #         self.pusherStatus = PusherStatus.READY
-        #         self.pusherError = PusherError.NONE
 
         self.cntTimeOutExecProcess += 1
         if self.cntTimeOutExecProcess >= 30:
@@ -808,6 +807,7 @@ if __name__ == "__main__":
                             print("[*] Reconnected to server")
                             conn_state = 'CONNECTED'
                             reconnect_timer = 0
+                            TCPClient.start_ping_sender()
                         else:
                             print("[*] Reconnect failed")
                             reconnect_timer = 100
