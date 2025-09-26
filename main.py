@@ -93,6 +93,9 @@ class MainPusher:
         self.try_init_tcp()
         self.init_gpioOut()
 
+        self.req_back_during_load = False
+
+
     def init_gpioOut(self):
         # 부팅 시 모든 출력 OFF(안전)
         self.set_out(self.gpioOut_pusherFront, False)
@@ -212,8 +215,6 @@ class MainPusher:
         # Update previous state
         self.both_pressed_prev = both_pressed
 
-    #
-    #
     # def check_and_send_mapping_start(self):
     #     left = self.gpioIn_Start_L.value()
     #     right = self.gpioIn_Start_R.value()
@@ -284,18 +285,6 @@ class MainPusher:
                 else:
                     self.replyMessage('Reset failed')
 
-            # elif self.rxMessage == 'Start':
-            #     if self.pusherStatus == PusherStatus.READY:
-            #         self.idxExecProcess_load = 0
-            #         self.isExecProcess_load = True
-            #         print("[Start] load started")
-            #     else:
-            #         self.idxExecProcess_unit0p = 0
-            #         self.isExecProcess_manualHandle = True
-            #         print("[Start] manual handle started (not READY)")
-            #     self.cntTimeOutExecProcess = 0
-            #     self.pusherStatus = PusherStatus.DOING
-
             elif self.rxMessage == 'Finish':
                 if self.pusherStatus == PusherStatus.READY:
                     self.idxExecProcess_Unload = 0
@@ -315,10 +304,24 @@ class MainPusher:
 
             elif self.rxMessage == 'Pusher back':
                 print('rxMessage Pusher back received')
-                self.idxExecProcess_Unload = 0
-                self.isExecProcess_load = False
-                self.isExecProcess_Unload = True
-                print(f"[FORCE BACK] Front={self.gpioOut_pusherFront.value()} Back={self.gpioOut_pusherBack.value()} (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+                # MOD: 로드 진행 특정 단계(2,3,4)에서만 즉시 역동작 플래그 설정
+                if self.isExecProcess_load and self.idxExecProcess_load in (2, 3, 4):
+                    self.req_back_during_load = True
+                    print(f"[LOAD->BACK] Mark abort flag at idx {self.idxExecProcess_load}")
+                else:
+                    # 기존 강제 언로드 동작 (로드 중 아님 혹은 다른 단계)
+                    self.idxExecProcess_Unload = 0
+                    self.isExecProcess_load = False
+                    self.isExecProcess_Unload = True
+                    print(f"[FORCE BACK] Front={self.gpioOut_pusherFront.value()} Back={self.gpioOut_pusherBack.value()} (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+
+
+            # elif self.rxMessage == 'Pusher back':
+            #     print('rxMessage Pusher back received')
+            #     self.idxExecProcess_Unload = 0
+            #     self.isExecProcess_load = False
+            #     self.isExecProcess_Unload = True
+            #     print(f"[FORCE BACK] Front={self.gpioOut_pusherFront.value()} Back={self.gpioOut_pusherBack.value()} (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
 
             elif self.rxMessage.startswith('Manual'):
                 if self.isExecProcess_load == False:
@@ -419,8 +422,6 @@ class MainPusher:
                 self.isExecProcess_unit0p = False
                 self.rxMessage = ''  # 같은 명령의 반복 트리거 방지
 
-
-
     def execProcess_setPusherPos(self):
         # 초기 위치 설정
         if self.idxExecProcess_initPusherPos == 0:                          # Pusher up
@@ -457,9 +458,37 @@ class MainPusher:
             self.pusherError = PusherError.INIT_PUSHER_POS
             self.isInitedPusher = False
 
-    def execProcess_load(self):
 
-        if self.idxExecProcess_load == 0:                     # 초기상태 확인 (Up, Back 감지되어야)
+
+    def execProcess_load(self):
+        # MOD: 로드 중 'Pusher back' 명령 처리
+        if self.req_back_during_load:
+            if self.idxExecProcess_load in (2, 3):
+                # 전진 중 또는 전진 후 지연: 즉시 후진
+                print(f"[load abort -> back] idx={self.idxExecProcess_load} : reverse immediately")
+                self.set_out(self.gpioOut_pusherFront, False)
+                self.set_out(self.gpioOut_pusherBack, True)
+                # 안전하게 Up 상태 유지
+                self.set_out(self.gpioOut_pusherDown, False)
+                self.set_out(self.gpioOut_pusherUp, True)
+                # 새 인덱스: Back 센서 대기
+                self.idxExecProcess_load = 210
+                self.cntExecProcess = 0
+                self.cntTimeOutExecProcess = 0
+            elif self.idxExecProcess_load == 4:
+                # 하강 중: 먼저 Up으로 복귀 후 Back
+                print("[load abort -> back] idx=4 : raise first then back")
+                self.set_out(self.gpioOut_pusherDown, False)
+                self.set_out(self.gpioOut_pusherUp, True)
+                self.set_out(self.gpioOut_pusherFront, False)  # 더 이상 전진 유지 불필요
+                # Up 센서 대기 단계
+                self.idxExecProcess_load = 205
+                self.cntExecProcess = 0
+                self.cntTimeOutExecProcess = 0
+            self.req_back_during_load = False  # 플래그 소모
+
+        # 정상 로드 시퀀스
+        if self.idxExecProcess_load == 0:
             if self.in_active(self.gpioIn_PusherUp) and self.in_active(self.gpioIn_PusherBack):
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_load += 1
@@ -470,29 +499,26 @@ class MainPusher:
                     self.pusherError = PusherError.PUSHER_BACK
                 return
 
-        if self.idxExecProcess_load == 1:                     # Pusher 전진 동작
+        if self.idxExecProcess_load == 1:
             self.set_out(self.gpioOut_pusherBack, False)
             self.set_out(self.gpioOut_pusherFront, True)
             print(f"[load idx1] OUT Front=ON, Back=OFF (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
-            print(f"[load idx1] OUT raw levels Front={self.gpioOut_pusherFront.value()}, Back={self.gpioOut_pusherBack.value()}")
             self.idxExecProcess_load += 1
 
         elif self.idxExecProcess_load == 2:
             self.pusherError = PusherError.PUSHER_FRONT
-            fv = self.raw_in_level(self.gpioIn_PusherFront)
-            print(f"[load idx2] Front sensor raw={fv} (active={'0' if ACTIVE_LOW_IN else '1'})")
             if self.in_active(self.gpioIn_PusherFront):
                 self.cntTimeOutExecProcess = 0
                 self.cntExecProcess = 0
                 self.idxExecProcess_load += 1
 
-        elif self.idxExecProcess_load == 3:                   # delay 500ms (100ms * 5)
+        elif self.idxExecProcess_load == 3:
             self.cntExecProcess += 1
             if self.cntExecProcess >= 5:
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_load += 1
 
-        elif self.idxExecProcess_load == 4:                   # Pusher 하강
+        elif self.idxExecProcess_load == 4:
             self.set_out(self.gpioOut_pusherUp, False)
             self.set_out(self.gpioOut_pusherDown, True)
             print(f"[load idx4] OUT Up=OFF, Down=ON (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
@@ -501,21 +527,129 @@ class MainPusher:
 
         elif self.idxExecProcess_load == 5:
             self.pusherError = PusherError.PUSHER_DOWN
-            dv = self.raw_in_level(self.gpioIn_PusherDown)
-            print(f"[load idx5] Down sensor raw={dv} (active={'0' if ACTIVE_LOW_IN else '1'})")
-            TCPClient.sendMessage('Pusher down finished\n')
             if self.in_active(self.gpioIn_PusherDown):
+                TCPClient.sendMessage('Pusher down finished\n')
+                self.isExecProcess_load = False
+                self.pusherStatus = PusherStatus.READY
+                self.pusherError = PusherError.NONE
+
+        # MOD: abort 전용 추가 단계 (205, 210)
+        elif self.idxExecProcess_load == 205:
+            # Up 복구 대기
+            self.pusherError = PusherError.PUSHER_UP
+            if self.in_active(self.gpioIn_PusherUp):
+                print("[load abort] Up sensor ok -> move back")
+                self.set_out(self.gpioOut_pusherFront, False)
+                self.set_out(self.gpioOut_pusherBack, True)
+                self.idxExecProcess_load = 210
+                self.cntExecProcess = 0
+                self.cntTimeOutExecProcess = 0
+
+        elif self.idxExecProcess_load == 210:
+            # Back 센서 대기
+            self.pusherError = PusherError.PUSHER_BACK
+            if self.in_active(self.gpioIn_PusherBack):
+                print("[load abort] Back sensor active -> finished")
+                TCPClient.sendMessage('Pusher back finished\n')
                 self.isExecProcess_load = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
 
         self.cntTimeOutExecProcess += 1
-        if self.cntTimeOutExecProcess >= 30:                  # 3초 타임아웃
+        if self.cntTimeOutExecProcess >= 30 and self.isExecProcess_load:
             errorCode = self.checkErrorCode()
+            print("[load] TIMEOUT in idx", self.idxExecProcess_load)
             self.isExecProcess_load = False
             self.pusherStatus = PusherStatus.ERROR
             self.pusherError = PusherError.LOAD_UNLOAD
             self.replyMessage('Error' + errorCode)
+
+
+
+
+
+
+
+
+
+    #
+    # def execProcess_load(self):
+    #
+    #     # ------------------------------------------------------------------
+    #     # CHANGE: 'Pusher back' 명령 수신 시 즉시 로드 동작 중단
+    #     # 서버에서 이미 func_10msec 단계에서 isExecProcess_load False, isExecProcess_Unload True로
+    #     # 전환하지만, 혹시 실행 타이밍이 겹칠 수 있으므로 이중 안전장치로 즉시 종료.
+    #     # 필요 시 여기서 언로드 초기화까지 수행.
+    #     # ------------------------------------------------------------------
+    #     if self.rxMessage == 'Pusher back':
+    #         print('[execProcess_load] Abort: received "Pusher back" command. Switching to unload.')
+    #         # 로드 시퀀스 완전 중단
+    #         self.isExecProcess_load = False
+    #         self.idxExecProcess_load = 0
+    #         # 언로드 시퀀스 준비 (원하지 않으면 아래 3줄 제거)
+    #         self.idxExecProcess_Unload = 0
+    #         self.isExecProcess_Unload = True
+    #         self.pusherStatus = PusherStatus.DOING
+    #         return
+    #     # ------------------------------------------------------------------
+    #
+    #     if self.idxExecProcess_load == 0:                     # 초기상태 확인 (Up, Back 감지되어야)
+    #         if self.in_active(self.gpioIn_PusherUp) and self.in_active(self.gpioIn_PusherBack):
+    #             self.cntTimeOutExecProcess = 0
+    #             self.idxExecProcess_load += 1
+    #         else:
+    #             if not self.in_active(self.gpioIn_PusherUp):
+    #                 self.pusherError = PusherError.PUSHER_UP
+    #             elif not self.in_active(self.gpioIn_PusherBack):
+    #                 self.pusherError = PusherError.PUSHER_BACK
+    #             return
+    #
+    #     if self.idxExecProcess_load == 1:                     # Pusher 전진 동작
+    #         self.set_out(self.gpioOut_pusherBack, False)
+    #         self.set_out(self.gpioOut_pusherFront, True)
+    #         print(f"[load idx1] OUT Front=ON, Back=OFF (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+    #         print(f"[load idx1] OUT raw levels Front={self.gpioOut_pusherFront.value()}, Back={self.gpioOut_pusherBack.value()}")
+    #         self.idxExecProcess_load += 1
+    #
+    #     elif self.idxExecProcess_load == 2:
+    #         self.pusherError = PusherError.PUSHER_FRONT
+    #         fv = self.raw_in_level(self.gpioIn_PusherFront)
+    #         print(f"[load idx2] Front sensor raw={fv} (active={'0' if ACTIVE_LOW_IN else '1'})")
+    #         if self.in_active(self.gpioIn_PusherFront):
+    #             self.cntTimeOutExecProcess = 0
+    #             self.cntExecProcess = 0
+    #             self.idxExecProcess_load += 1
+    #
+    #     elif self.idxExecProcess_load == 3:                   # delay 500ms (100ms * 5)
+    #         self.cntExecProcess += 1
+    #         if self.cntExecProcess >= 5:
+    #             self.cntTimeOutExecProcess = 0
+    #             self.idxExecProcess_load += 1
+    #
+    #     elif self.idxExecProcess_load == 4:                   # Pusher 하강
+    #         self.set_out(self.gpioOut_pusherUp, False)
+    #         self.set_out(self.gpioOut_pusherDown, True)
+    #         print(f"[load idx4] OUT Up=OFF, Down=ON (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
+    #         self.cntExecProcess = 0
+    #         self.idxExecProcess_load += 1
+    #
+    #     elif self.idxExecProcess_load == 5:
+    #         self.pusherError = PusherError.PUSHER_DOWN
+    #         dv = self.raw_in_level(self.gpioIn_PusherDown)
+    #         print(f"[load idx5] Down sensor raw={dv} (active={'0' if ACTIVE_LOW_IN else '1'})")
+    #         TCPClient.sendMessage('Pusher down finished\n')
+    #         if self.in_active(self.gpioIn_PusherDown):
+    #             self.isExecProcess_load = False
+    #             self.pusherStatus = PusherStatus.READY
+    #             self.pusherError = PusherError.NONE
+    #
+    #     self.cntTimeOutExecProcess += 1
+    #     if self.cntTimeOutExecProcess >= 30:                  # 3초 타임아웃
+    #         errorCode = self.checkErrorCode()
+    #         self.isExecProcess_load = False
+    #         self.pusherStatus = PusherStatus.ERROR
+    #         self.pusherError = PusherError.LOAD_UNLOAD
+    #         self.replyMessage('Error' + errorCode)
 
     def execProcess_Unload(self):
         # unload (Pusher Back)
@@ -687,62 +821,6 @@ class MainPusher:
             print(f"[returnToInit] TIMEOUT -> ERROR {errorCode}, reason={self.abort_reason}")
             TCPClient.sendMessage('ReturnInit Error' + errorCode + '\n')
 
-
-
-    # def execProcess_returnToInit(self):
-    #     """
-    #     비상/복귀 전용 상태머신
-    #     목표: Up=ON, Down=OFF, Back=ON, Front=OFF로 만들고, Up/Back 센서 확인 후 READY
-    #     타임아웃: 단계별 5초 (100ms tick 기준 50카운트)
-    #     """
-    #     TIMEOUT_TICKS = 50  # 5초 (func_100msec 기준)
-    #
-    #     if self.idxExecProcess_returnToInit == 0:
-    #         # 1) Up 방향 구동 (Down OFF는 request에서 이미 수행)
-    #         self.set_out(self.gpioOut_pusherUp, True)
-    #         # Front는 이미 OFF. Back은 나중에 ON 시킴(앞축 해제 후 후진)
-    #         print(f"[returnToInit idx0] Up=ON, Down=OFF, Front=OFF (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
-    #         self.cntReturnTimeout = 0
-    #         self.idxExecProcess_returnToInit = 1
-    #
-    #     elif self.idxExecProcess_returnToInit == 1:
-    #         # 2) Up 센서 확인
-    #         self.pusherError = PusherError.PUSHER_UP
-    #         if self.in_active(self.gpioIn_PusherUp):
-    #             self.cntReturnTimeout = 0
-    #             self.idxExecProcess_returnToInit = 2
-    #             print("[returnToInit idx1] Up sensor active")
-    #         else:
-    #             self.cntReturnTimeout += 1
-    #
-    #     elif self.idxExecProcess_returnToInit == 2:
-    #         # 3) Back 구동 (Front는 이미 OFF 유지)
-    #         self.set_out(self.gpioOut_pusherBack, True)
-    #         self.set_out(self.gpioOut_pusherFront, False)
-    #         print(f"[returnToInit idx2] Back=ON, Front=OFF (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
-    #         self.cntReturnTimeout = 0
-    #         self.idxExecProcess_returnToInit = 3
-    #
-    #     elif self.idxExecProcess_returnToInit == 3:
-    #         # 4) Back 센서 확인
-    #         self.pusherError = PusherError.PUSHER_BACK
-    #         if self.in_active(self.gpioIn_PusherBack):
-    #             self.isExecProcess_returnToInit = False
-    #             self.pusherStatus = PusherStatus.READY
-    #             self.pusherError = PusherError.NONE
-    #             print("[returnToInit idx3] Back sensor active -> READY")
-    #             TCPClient.sendMessage('ReturnInit OK\n')
-    #         else:
-    #             self.cntReturnTimeout += 1
-    #
-    #     # 공통 타임아웃 처리
-    #     if self.isExecProcess_returnToInit and self.cntReturnTimeout >= TIMEOUT_TICKS:
-    #         errorCode = self.checkErrorCode()
-    #         self.isExecProcess_returnToInit = False
-    #         self.pusherStatus = PusherStatus.ERROR
-    #         print(f"[returnToInit] TIMEOUT -> ERROR {errorCode}, reason={self.abort_reason}")
-    #         TCPClient.sendMessage('ReturnInit Error' + errorCode + '\n')
-
     # ADD: 연결 끊김 시 런타임 상태 리셋용 메서드
     def reset_runtime_state(self):
         print("[reset_runtime_state] Disconnected: clearing in-progress states and counters")
@@ -778,7 +856,6 @@ class MainPusher:
         # (원한다면 READY로 바꿀 수 있으나, 센서 확인 없이 READY는 위험할 수 있음)
         self.pusherStatus = PusherStatus.UNKNOWN
         self.pusherError = PusherError.NONE
-
 
 if __name__ == "__main__":
         cnt_msec = 0
