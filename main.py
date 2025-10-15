@@ -514,7 +514,7 @@ class MainPusher:
 
         elif self.idxExecProcess_load == 3:
             self.cntExecProcess += 1
-            if self.cntExecProcess >= 5:
+            if self.cntExecProcess >= 1:
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_load += 1
 
@@ -659,6 +659,7 @@ class MainPusher:
             print(f"[unload idx0] OUT Up=ON, Down=OFF (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
             self.idxExecProcess_Unload += 1
 
+
         elif self.idxExecProcess_Unload == 1:
             self.pusherError = PusherError.PUSHER_UP
             uv = self.raw_in_level(self.gpioIn_PusherUp)
@@ -670,7 +671,7 @@ class MainPusher:
 
         elif self.idxExecProcess_Unload == 2:                 # 대기 500msec
             self.cntExecProcess += 1
-            if self.cntExecProcess >= 5:
+            if self.cntExecProcess >= 1:
                 self.cntTimeOutExecProcess = 0
                 self.idxExecProcess_Unload += 1
 
@@ -686,6 +687,7 @@ class MainPusher:
             bv = self.raw_in_level(self.gpioIn_PusherBack)
             print(f"[unload idx4] Back sensor raw={bv} (active={'0' if ACTIVE_LOW_IN else '1'})")
             if self.in_active(self.gpioIn_PusherBack):
+                self.replyMessage('Unload process')
                 self.replyMessage('Pusher back finished')
                 self.isExecProcess_Unload = False
                 self.pusherStatus = PusherStatus.READY
