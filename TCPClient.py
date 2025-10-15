@@ -9,6 +9,8 @@ import sys
 tcpSocket = None
 is_initialized = False
 _ping_thread_running = False
+_ping_thread = None
+_socket_lock = _thread.allocate_lock()
 
 def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_port: int):
     print("==> TCPClient.init() called")
@@ -47,7 +49,7 @@ def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_p
             print(f"[*] Connected to TCP Server: {server_ip} : {server_port}")
 
             # ping 송신 스레드가 중복 없이 반드시 새로 시작되도록 보장
-            #_ping_thread_running = False  # 재접속 시 항상 False로
+            _ping_thread_running = False  # 재접속 시 항상 False로
             if not _ping_thread_running:
                 _thread.start_new_thread(_ping_sender, ())
                 _ping_thread_running = True
@@ -73,11 +75,32 @@ def init(ipAddress: str, portNumber: int, gateway: str, server_ip: str, server_p
             pass
         tcpSocket = None
 
+
+
+def start_ping_sender():
+    global _ping_thread, _ping_thread_running
+    if _ping_thread_running:
+        return
+    _ping_thread_running = True
+    try:
+        # MicroPython은 daemon 개념이 없고, 함수가 끝나면 스레드가 종료됩니다.
+        _ping_thread = _thread.start_new_thread(_ping_sender, ())
+    except Exception:
+        # 스레드 시작 실패 시 플래그 롤백
+        _ping_thread_running = False
+        raise
+
+
+
 def _ping_sender():
     global tcpSocket, is_initialized, _ping_thread_running
     try:
         while is_initialized and tcpSocket:
             try:
+                with _socket_lock:
+                    sock=tcpSocket
+                if not sock:
+                    break
                 tcpSocket.sendall(b"ping\n")
                 print("[*] Ping sent")
             except Exception as e:
@@ -143,8 +166,14 @@ def sendMessage(msg: str):
         if not is_initialized or tcpSocket is None:
             print("[클라이언트] sendMessage: Not initialized, message not sent.")
             return
-        tcpSocket.sendall(msg.encode('utf-8'))
-        print(f"[클라이언트] Message sent: {msg}")
+
+        # 메시지 경계 보장: 끝의 개행류 제거 후 '\n' 하나만 부여
+        if not isinstance(msg, str):
+            msg = str(msg)
+        wire = msg.rstrip('\r\n') + '\n'
+
+        tcpSocket.sendall(wire.encode('utf-8'))
+        print(f"[클라이언트] Message sent: {wire.rstrip()}")
     except Exception as e:
         print(f"[클라이언트] Send Error: {str(e)}")
         is_initialized = False
