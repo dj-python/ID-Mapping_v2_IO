@@ -2,7 +2,7 @@
 
 from machine import Pin, I2C
 import time
-import TCPClient
+import UDPClient
 
 class PusherStatus:
     UNKNOWN = 1
@@ -31,7 +31,7 @@ class MainPusher:
         self.idxExecProcess_Unload = 0
         self.isExecProcess_load = False
         self.isExecProcess_Unload = False
-        self.sysLed_pico = Pin(25, Pin.OUT)
+        self.sysLed_picoBrd = Pin(25, Pin.OUT)
 
         #region Init GPIO_OUT
         self.gpioOut_pusherDown = Pin(10, Pin.OUT)  # GP10
@@ -167,7 +167,7 @@ class MainPusher:
 
     def try_init_tcp(self):
         try:
-            TCPClient.init(
+            UDPClient.init(
                 ipAddress=self.ipAddress,
                 portNumber=self.portNumber,
                 server_ip=self.server_ip,
@@ -200,14 +200,14 @@ class MainPusher:
 
         # Rising edge: both become pressed now (from not-both-pressed)
         if both_pressed and not self.both_pressed_prev:
-            TCPClient.sendMessage('Mapping start\n')
+            UDPClient.sendMessage('Mapping start\n')
             print('[Mapping start] sent to server (Start_R + Start_L pressed simultaneously)')
             self.mapping_start_sent = True
 
         # Falling edge: leaving both-pressed state → at least one button released
         if (not both_pressed) and self.both_pressed_prev:
             if self.mapping_start_sent:
-                TCPClient.sendMessage('Button unpushed\n')
+                UDPClient.sendMessage('Button unpushed\n')
                 print('[Button unpushed] sent to server (one or both buttons released)')
             # Reset for next cycle
             self.mapping_start_sent = False
@@ -245,13 +245,13 @@ class MainPusher:
             if not self.isExecProcess_returnToInit:
                 self.request_return_to_init('E-STOP')
                 # 서버 통지(선택)
-                TCPClient.sendMessage('EmergencyStop\n')
+                UDPClient.sendMessage('EmergencyStop\n')
             # 비상 시에는 수신 명령 무시해도 됨(선택)
             # return
 
         self.check_and_send_mapping_start()
 
-        message = TCPClient.read_from_socket()
+        message = UDPClient.read_from_socket()
         if message is not None:
             self.rxMessage = message.decode('utf-8').strip()
             print("[RX]", self.rxMessage, "status:", self.pusherStatus)
@@ -261,7 +261,7 @@ class MainPusher:
                 if not self.isExecProcess_returnToInit:
                     self.request_return_to_init(f'server:{self.rxMessage}')
                     # 선택: 즉시 수신 확인 응답
-                    TCPClient.sendMessage('ReturnInit Requested\n')
+                    UDPClient.sendMessage('ReturnInit Requested\n')
                 else:
                     print('[go_init] already returning to init; ignoring duplicate')
                 return  # 복귀 우선 처리
@@ -352,7 +352,7 @@ class MainPusher:
     def func_25msec(self):
         if self.isExecProcess_initPusherPos:
             self.execProcess_setPusherPos()
-        if not TCPClient.is_initialized:
+        if not UDPClient.is_initialized:
             return
         if self.isExecProcess_initPusherPos:
             self.execProcess_setPusherPos()
@@ -378,7 +378,7 @@ class MainPusher:
 
 
     def func_500msec(self):
-        pass
+        self.sysLed_picoBrd(not self.sysLed_picoBrd.value())
 
         # # 입출력 상태 주기 출력(진단용)
         # inputs = {
@@ -528,7 +528,7 @@ class MainPusher:
         elif self.idxExecProcess_load == 5:
             self.pusherError = PusherError.PUSHER_DOWN
             if self.in_active(self.gpioIn_PusherDown):
-                TCPClient.sendMessage('Pusher down finished\n')
+                UDPClient.sendMessage('Pusher down finished\n')
                 self.isExecProcess_load = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
@@ -550,7 +550,7 @@ class MainPusher:
             self.pusherError = PusherError.PUSHER_BACK
             if self.in_active(self.gpioIn_PusherBack):
                 print("[load abort] Back sensor active -> finished")
-                TCPClient.sendMessage('Pusher back finished\n')
+                UDPClient.sendMessage('Pusher back finished\n')
                 self.isExecProcess_load = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
@@ -708,7 +708,7 @@ class MainPusher:
         # 메시지 경계 보장을 위해 개행 추가(중복 방지)
         if not message.endswith('\n'):
             message = message + '\n'
-        TCPClient.sendMessage(message)
+        UDPClient.sendMessage(message)
 
     def replyMessage(self, message):
         # Check_status는 원래 의도대로 무시
@@ -811,7 +811,7 @@ class MainPusher:
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
                 print("[returnToInit idx3] Back sensor active -> READY")
-                TCPClient.sendMessage('ReturnInit OK\n')
+                UDPClient.sendMessage('ReturnInit OK\n')
             else:
                 self.cntReturnTimeout += 1
 
@@ -821,7 +821,7 @@ class MainPusher:
             self.isExecProcess_returnToInit = False
             self.pusherStatus = PusherStatus.ERROR
             print(f"[returnToInit] TIMEOUT -> ERROR {errorCode}, reason={self.abort_reason}")
-            TCPClient.sendMessage('ReturnInit Error' + errorCode + '\n')
+            UDPClient.sendMessage('ReturnInit Error' + errorCode + '\n')
 
     # ADD: 연결 끊김 시 런타임 상태 리셋용 메서드
     def reset_runtime_state(self):
@@ -870,34 +870,33 @@ if __name__ == "__main__":
 
         main = MainPusher(server_ip=server_ip, server_port=server_port)
 
-        conn_state = "CONNECTED" if TCPClient.is_initialized else "DISCONNECTED"
+        conn_state = "CONNECTED" if UDPClient.is_initialized else "DISCONNECTED"
         reconnect_timer = 0
 
         while True:
             try:
                 cnt_msec += 1
 
-                if not TCPClient.is_initialized:
-                    conn_state = "DISCONNECTED"
-                    if reconnect_timer <= 0:
-                        print("[*] Trying to reconnect to server...")
-                        main.try_init_tcp()
-                        if TCPClient.is_initialized:
-                            print("[*] Reconnected to server")
-                            conn_state = 'CONNECTED'
-                            reconnect_timer = 0
-                            TCPClient.start_ping_sender()
-                        else:
-                            print("[*] Reconnect failed")
-                            reconnect_timer = 100
-                    else:
-                        reconnect_timer -= 1
-                else:
-                    conn_state = 'CONNECTED'
+                # if not TCPClient.is_initialized:
+                #     conn_state = "DISCONNECTED"
+                #     if reconnect_timer <= 0:
+                #         print("[*] Trying to reconnect to server...")
+                #         main.try_init_tcp()
+                #         if TCPClient.is_initialized:
+                #             print("[*] Reconnected to server")
+                #             conn_state = 'CONNECTED'
+                #             reconnect_timer = 0
+                #             # TCPClient.start_ping_sender()
+                #         else:
+                #             print("[*] Reconnect failed")
+                #             reconnect_timer = 100
+                #     else:
+                #         reconnect_timer -= 1
+                # else:
+                #     conn_state = 'CONNECTED'
 
                 if not cnt_msec % 10:
-                    if TCPClient.is_initialized:
-                        main.func_10msec()
+                    main.func_10msec()
 
                 if not cnt_msec % 25:
                     main.func_25msec()
@@ -911,7 +910,7 @@ if __name__ == "__main__":
                 time.sleep_ms(1)
             except KeyboardInterrupt:
                 print("KeyboardInterrupt: cleaning up TCP...")
-                TCPClient.close_connection()
+                UDPClient.close_connection()
                 break
             except Exception as e:
                 print("Exception in main loop", e)
