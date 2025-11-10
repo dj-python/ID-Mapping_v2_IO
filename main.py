@@ -2,7 +2,7 @@
 
 from machine import Pin, I2C
 import time
-import UDPClient
+import TCPClient
 
 class PusherStatus:
     UNKNOWN = 1
@@ -167,12 +167,10 @@ class MainPusher:
 
     def try_init_tcp(self):
         try:
-            UDPClient.init(
-                ipAddress=self.ipAddress,
-                portNumber=self.portNumber,
+            TCPClient.init(
+                client_ip=self.ipAddress,
                 server_ip=self.server_ip,
                 server_port=self.server_port,
-                gateway=self.gateway
             )
         except Exception as e:
             print(f"[-] Initialization Error: {str(e)}")
@@ -200,14 +198,14 @@ class MainPusher:
 
         # Rising edge: both become pressed now (from not-both-pressed)
         if both_pressed and not self.both_pressed_prev:
-            UDPClient.sendMessage('Mapping start\n')
+            TCPClient.sendMessage('Mapping start\n')
             print('[Mapping start] sent to server (Start_R + Start_L pressed simultaneously)')
             self.mapping_start_sent = True
 
         # Falling edge: leaving both-pressed state → at least one button released
         if (not both_pressed) and self.both_pressed_prev:
             if self.mapping_start_sent:
-                UDPClient.sendMessage('Button unpushed\n')
+                TCPClient.sendMessage('Button unpushed\n')
                 print('[Button unpushed] sent to server (one or both buttons released)')
             # Reset for next cycle
             self.mapping_start_sent = False
@@ -215,27 +213,6 @@ class MainPusher:
         # Update previous state
         self.both_pressed_prev = both_pressed
 
-    # def check_and_send_mapping_start(self):
-    #     left = self.gpioIn_Start_L.value()
-    #     right = self.gpioIn_Start_R.value()
-    #
-    #     if left == 0 and right == 0:
-    #         if self.start_btn_hold_start_time is None:
-    #             self.start_btn_hold_start_time = time.ticks_ms()
-    #             print("Both buttons pressed, timer started")
-    #         elif not self.mapping_start_sent:
-    #             held_ms = time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)
-    #             print(f"Buttons held for {held_ms} ms")
-    #             if held_ms >= self.MAPPING_START_HOLD_MS:
-    #                 print("Sending message: Mapping start")
-    #                 TCPClient.sendMessage('Mapping start\n')
-    #                 print('[Mapping start] sent to server by Start_R + Start_L')
-    #                 self.mapping_start_sent = True
-    #     else:
-    #         if self.start_btn_hold_start_time is not None:
-    #             print(f"Buttons released after holding {time.ticks_diff(time.ticks_ms(), self.start_btn_hold_start_time)} ms")
-    #         self.start_btn_hold_start_time = None
-    #         self.mapping_start_sent = False
 
     def func_10msec(self):
         self.get_gpioIn()
@@ -245,13 +222,13 @@ class MainPusher:
             if not self.isExecProcess_returnToInit:
                 self.request_return_to_init('E-STOP')
                 # 서버 통지(선택)
-                UDPClient.sendMessage('EmergencyStop\n')
+                TCPClient.sendMessage('EmergencyStop\n')
             # 비상 시에는 수신 명령 무시해도 됨(선택)
             # return
 
         self.check_and_send_mapping_start()
 
-        message = UDPClient.read_from_socket()
+        message = TCPClient.read_from_socket()
         if message is not None:
             self.rxMessage = message.decode('utf-8').strip()
             print("[RX]", self.rxMessage, "status:", self.pusherStatus)
@@ -261,7 +238,7 @@ class MainPusher:
                 if not self.isExecProcess_returnToInit:
                     self.request_return_to_init(f'server:{self.rxMessage}')
                     # 선택: 즉시 수신 확인 응답
-                    UDPClient.sendMessage('ReturnInit Requested\n')
+                    TCPClient.sendMessage('ReturnInit Requested\n')
                 else:
                     print('[go_init] already returning to init; ignoring duplicate')
                 return  # 복귀 우선 처리
@@ -352,12 +329,13 @@ class MainPusher:
     def func_25msec(self):
         if self.isExecProcess_initPusherPos:
             self.execProcess_setPusherPos()
-        if not UDPClient.is_initialized:
-            return
         if self.isExecProcess_initPusherPos:
             self.execProcess_setPusherPos()
 
     def func_100msec(self):
+        if not TCPClient.client_status['connected']:
+            TCPClient.init(self.ipAddress, self.server_ip, self.server_port)
+
         # 복귀 상태머신을 최우선 실행
         if self.isExecProcess_returnToInit:
             self.execProcess_returnToInit()
@@ -528,7 +506,7 @@ class MainPusher:
         elif self.idxExecProcess_load == 5:
             self.pusherError = PusherError.PUSHER_DOWN
             if self.in_active(self.gpioIn_PusherDown):
-                UDPClient.sendMessage('Pusher down finished\n')
+                TCPClient.sendMessage('Pusher down finished\n')
                 self.isExecProcess_load = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
@@ -550,7 +528,7 @@ class MainPusher:
             self.pusherError = PusherError.PUSHER_BACK
             if self.in_active(self.gpioIn_PusherBack):
                 print("[load abort] Back sensor active -> finished")
-                UDPClient.sendMessage('Pusher back finished\n')
+                TCPClient.sendMessage('Pusher back finished\n')
                 self.isExecProcess_load = False
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
@@ -566,90 +544,6 @@ class MainPusher:
 
 
 
-
-
-
-
-
-
-    #
-    # def execProcess_load(self):
-    #
-    #     # ------------------------------------------------------------------
-    #     # CHANGE: 'Pusher back' 명령 수신 시 즉시 로드 동작 중단
-    #     # 서버에서 이미 func_10msec 단계에서 isExecProcess_load False, isExecProcess_Unload True로
-    #     # 전환하지만, 혹시 실행 타이밍이 겹칠 수 있으므로 이중 안전장치로 즉시 종료.
-    #     # 필요 시 여기서 언로드 초기화까지 수행.
-    #     # ------------------------------------------------------------------
-    #     if self.rxMessage == 'Pusher back':
-    #         print('[execProcess_load] Abort: received "Pusher back" command. Switching to unload.')
-    #         # 로드 시퀀스 완전 중단
-    #         self.isExecProcess_load = False
-    #         self.idxExecProcess_load = 0
-    #         # 언로드 시퀀스 준비 (원하지 않으면 아래 3줄 제거)
-    #         self.idxExecProcess_Unload = 0
-    #         self.isExecProcess_Unload = True
-    #         self.pusherStatus = PusherStatus.DOING
-    #         return
-    #     # ------------------------------------------------------------------
-    #
-    #     if self.idxExecProcess_load == 0:                     # 초기상태 확인 (Up, Back 감지되어야)
-    #         if self.in_active(self.gpioIn_PusherUp) and self.in_active(self.gpioIn_PusherBack):
-    #             self.cntTimeOutExecProcess = 0
-    #             self.idxExecProcess_load += 1
-    #         else:
-    #             if not self.in_active(self.gpioIn_PusherUp):
-    #                 self.pusherError = PusherError.PUSHER_UP
-    #             elif not self.in_active(self.gpioIn_PusherBack):
-    #                 self.pusherError = PusherError.PUSHER_BACK
-    #             return
-    #
-    #     if self.idxExecProcess_load == 1:                     # Pusher 전진 동작
-    #         self.set_out(self.gpioOut_pusherBack, False)
-    #         self.set_out(self.gpioOut_pusherFront, True)
-    #         print(f"[load idx1] OUT Front=ON, Back=OFF (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
-    #         print(f"[load idx1] OUT raw levels Front={self.gpioOut_pusherFront.value()}, Back={self.gpioOut_pusherBack.value()}")
-    #         self.idxExecProcess_load += 1
-    #
-    #     elif self.idxExecProcess_load == 2:
-    #         self.pusherError = PusherError.PUSHER_FRONT
-    #         fv = self.raw_in_level(self.gpioIn_PusherFront)
-    #         print(f"[load idx2] Front sensor raw={fv} (active={'0' if ACTIVE_LOW_IN else '1'})")
-    #         if self.in_active(self.gpioIn_PusherFront):
-    #             self.cntTimeOutExecProcess = 0
-    #             self.cntExecProcess = 0
-    #             self.idxExecProcess_load += 1
-    #
-    #     elif self.idxExecProcess_load == 3:                   # delay 500ms (100ms * 5)
-    #         self.cntExecProcess += 1
-    #         if self.cntExecProcess >= 5:
-    #             self.cntTimeOutExecProcess = 0
-    #             self.idxExecProcess_load += 1
-    #
-    #     elif self.idxExecProcess_load == 4:                   # Pusher 하강
-    #         self.set_out(self.gpioOut_pusherUp, False)
-    #         self.set_out(self.gpioOut_pusherDown, True)
-    #         print(f"[load idx4] OUT Up=OFF, Down=ON (ACTIVE_LOW_OUT={ACTIVE_LOW_OUT})")
-    #         self.cntExecProcess = 0
-    #         self.idxExecProcess_load += 1
-    #
-    #     elif self.idxExecProcess_load == 5:
-    #         self.pusherError = PusherError.PUSHER_DOWN
-    #         dv = self.raw_in_level(self.gpioIn_PusherDown)
-    #         print(f"[load idx5] Down sensor raw={dv} (active={'0' if ACTIVE_LOW_IN else '1'})")
-    #         TCPClient.sendMessage('Pusher down finished\n')
-    #         if self.in_active(self.gpioIn_PusherDown):
-    #             self.isExecProcess_load = False
-    #             self.pusherStatus = PusherStatus.READY
-    #             self.pusherError = PusherError.NONE
-    #
-    #     self.cntTimeOutExecProcess += 1
-    #     if self.cntTimeOutExecProcess >= 30:                  # 3초 타임아웃
-    #         errorCode = self.checkErrorCode()
-    #         self.isExecProcess_load = False
-    #         self.pusherStatus = PusherStatus.ERROR
-    #         self.pusherError = PusherError.LOAD_UNLOAD
-    #         self.replyMessage('Error' + errorCode)
 
     def execProcess_Unload(self):
         # unload (Pusher Back)
@@ -687,7 +581,7 @@ class MainPusher:
             bv = self.raw_in_level(self.gpioIn_PusherBack)
             print(f"[unload idx4] Back sensor raw={bv} (active={'0' if ACTIVE_LOW_IN else '1'})")
             if self.in_active(self.gpioIn_PusherBack):
-                self.replyMessage('Unload process')
+                # self.replyMessage('Unload process')
                 self.replyMessage('Pusher back finished')
                 self.isExecProcess_Unload = False
                 self.pusherStatus = PusherStatus.READY
@@ -708,7 +602,7 @@ class MainPusher:
         # 메시지 경계 보장을 위해 개행 추가(중복 방지)
         if not message.endswith('\n'):
             message = message + '\n'
-        UDPClient.sendMessage(message)
+        TCPClient.sendMessage(message)
 
     def replyMessage(self, message):
         # Check_status는 원래 의도대로 무시
@@ -811,7 +705,7 @@ class MainPusher:
                 self.pusherStatus = PusherStatus.READY
                 self.pusherError = PusherError.NONE
                 print("[returnToInit idx3] Back sensor active -> READY")
-                UDPClient.sendMessage('ReturnInit OK\n')
+                TCPClient.sendMessage('ReturnInit OK\n')
             else:
                 self.cntReturnTimeout += 1
 
@@ -821,7 +715,7 @@ class MainPusher:
             self.isExecProcess_returnToInit = False
             self.pusherStatus = PusherStatus.ERROR
             print(f"[returnToInit] TIMEOUT -> ERROR {errorCode}, reason={self.abort_reason}")
-            UDPClient.sendMessage('ReturnInit Error' + errorCode + '\n')
+            TCPClient.sendMessage('ReturnInit Error' + errorCode + '\n')
 
     # ADD: 연결 끊김 시 런타임 상태 리셋용 메서드
     def reset_runtime_state(self):
@@ -863,56 +757,24 @@ if __name__ == "__main__":
         cnt_msec = 0
 
         ipAddress = '192.168.1.105'
-        portNumber = 8005
+        portNumber = 8001
         gateway = '192.168.1.1'
-        server_ip = '192.168.1.2'
-        server_port = 8000
 
-        main = MainPusher(server_ip=server_ip, server_port=server_port)
-
-        conn_state = "CONNECTED" if UDPClient.is_initialized else "DISCONNECTED"
-        reconnect_timer = 0
+        main = MainPusher('192.168.1.2', 8001)
 
         while True:
-            try:
-                cnt_msec += 1
+            cnt_msec += 1
 
-                # if not TCPClient.is_initialized:
-                #     conn_state = "DISCONNECTED"
-                #     if reconnect_timer <= 0:
-                #         print("[*] Trying to reconnect to server...")
-                #         main.try_init_tcp()
-                #         if TCPClient.is_initialized:
-                #             print("[*] Reconnected to server")
-                #             conn_state = 'CONNECTED'
-                #             reconnect_timer = 0
-                #             # TCPClient.start_ping_sender()
-                #         else:
-                #             print("[*] Reconnect failed")
-                #             reconnect_timer = 100
-                #     else:
-                #         reconnect_timer -= 1
-                # else:
-                #     conn_state = 'CONNECTED'
+            if not cnt_msec % 10:
+                main.func_10msec()
 
-                if not cnt_msec % 10:
-                    main.func_10msec()
+            if not cnt_msec % 25:
+                main.func_25msec()
 
-                if not cnt_msec % 25:
-                    main.func_25msec()
+            if not cnt_msec % 100:
+                main.func_100msec()
 
-                if not cnt_msec % 100:
-                    main.func_100msec()
+            if not cnt_msec % 500:
+                main.func_500msec()
 
-                if not cnt_msec % 500:
-                    main.func_500msec()
-
-                time.sleep_ms(1)
-            except KeyboardInterrupt:
-                print("KeyboardInterrupt: cleaning up TCP...")
-                UDPClient.close_connection()
-                break
-            except Exception as e:
-                print("Exception in main loop", e)
-                import sys
-                sys.print_exception(e)
+            time.sleep_ms(1)
